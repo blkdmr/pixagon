@@ -69,6 +69,6 @@ The single-file extension is new. It has been run end to end on Linux with the O
 
 ## Open source and licenses
 
-Pixagon is open source under Apache 2.0, and is a derivative work of SpriteLoom by Valentyn Karachevtsev. The FLUX.2 Klein 4B model is licensed separately by Black Forest Labs under Apache 2.0 and is downloaded at runtime, not redistributed.
+Pixagon is open source under Apache 2.0, and is a derivative work of [SpriteLoom](https://github.com/vkarach/spriteloom) by Valentyn Karachevtsev. The FLUX.2 Klein 4B model is licensed separately by Black Forest Labs under Apache 2.0 and is downloaded at runtime, not redistributed.
 
-Source, samples and docs: github.com/blkdmr/pixagon and blkdmr.github.io/pixagon
+The extension is available on [itch.io] ](https://blkdmr.itch.io/pixagon)
