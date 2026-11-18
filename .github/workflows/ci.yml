@@ -1,0 +1,93 @@
+# Original work Copyright 2026 Valentyn Karachevtsev (SpriteLoom)
+# Licensed under the Apache License, Version 2.0
+# Modifications Copyright 2026 Alessio Russo (Pixagon)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    name: Server + launcher tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Tests mock the model; torch/diffusers not needed, only eager runtime deps.
+      - name: Install light deps
+        run: pip install "websockets>=12.0" "Pillow>=10.0" "numpy>=1.26" "scipy>=1.11" "tqdm>=4.66" "pytest>=8.0"
+      # launcher tests cover the per-OS paths, the process tree and Setup;
+      # they never open a window, so pywebview isn't needed here
+      - name: Run tests
+        run: python -m pytest server/tests/ launcher/tests/ --ignore=server/tests/smoke.py -q
+
+  scripts:
+    name: Release scripts (bash -n)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check the release scripts
+        run: |
+          bash -n release/lib.sh
+          bash -n release/build.sh
+          bash -n release/publish.sh
+
+  package:
+    name: Build the Aseprite extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build
+        run: release/build.sh
+      # Aseprite needs package.json at the root; the plugin starts
+      # launcher.daemon and server.main from beside it; tests stay out
+      - name: Check the archive
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          path, = glob.glob("release/dist/pixagon-*.aseprite-extension")
+          names = set(zipfile.ZipFile(path).namelist())
+          need = {"package.json", "main.lua", "bootstrap.lua",
+                  "launcher/daemon.py", "server/main.py",
+                  "server/model_catalog.json"}
+          missing = need - names
+          assert not missing, f"missing from {path}: {sorted(missing)}"
+          tests = [n for n in names if "/tests/" in n or n.startswith("tests/")]
+          assert not tests, f"tests shipped: {tests}"
+          print(f"{path}: {len(names)} entries ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixagon-extension
+          path: release/dist/*.aseprite-extension
+
+  plugin:
+    name: Plugin lint + tests (luacheck / lua)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.4 + luacheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 luarocks
+          sudo luarocks install luacheck
+      - name: Luacheck
+        run: luacheck plugin/*.lua plugin/tests/*.lua
+      - name: Unit tests
+        run: |
+          lua5.4 plugin/tests/test_prompt.lua
+          lua5.4 plugin/tests/test_panel.lua
+          lua5.4 plugin/tests/test_bootstrap.lua
+          lua5.4 plugin/tests/test_control.lua

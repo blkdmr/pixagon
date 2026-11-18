@@ -1,0 +1,218 @@
+-- Original work Copyright 2026 Valentyn Karachevtsev (SpriteLoom)
+-- Licensed under the Apache License, Version 2.0
+-- Modifications Copyright 2026 Alessio Russo (Pixagon)
+
+-- Sprite/image IO: export the current frame for the server, turn replies
+-- back into layers.
+local pluginDir = ...
+local b64 = dofile(app.fs.joinPath(pluginDir, "base64.lua"))
+
+local S = {}
+
+local function tempPath(name)
+  return app.fs.joinPath(app.fs.tempPath, "pixagon_" .. name)
+end
+
+local function readFile(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local data = f:read("a"); f:close(); return data
+end
+
+local function writeFile(path, data)
+  local f = assert(io.open(path, "wb")); f:write(data); f:close()
+end
+
+function S.newId()
+  return tostring(os.time()) .. "-" .. tostring(math.random(10000))
+end
+
+-- Flatten current frame to a PNG and return it base64-encoded.
+function S.exportFrame()
+  local spr = app.sprite
+  local img = Image(spr.width, spr.height)
+  img:drawSprite(spr, app.frame.frameNumber)
+  local p = tempPath("frame.png")
+  img:saveAs(p)
+  local data = readFile(p)
+  if not data then error("could not read temp file: " .. p) end
+  return b64.encode(data)
+end
+
+-- Current selection as a white-on-black mask PNG (base64), or nil.
+function S.exportMask()
+  local spr = app.sprite
+  local sel = spr.selection
+  if sel.isEmpty then return nil end
+  local img = Image(spr.width, spr.height)
+  local white = Color{ r = 255, g = 255, b = 255 }
+  img:clear(Color{ r = 0, g = 0, b = 0 })
+  -- only the bounding box can be white; scanning the whole canvas cost
+  -- 262144 contains() calls on Aseprite's UI thread
+  local b = sel.bounds
+  local x0, y0 = math.max(0, b.x), math.max(0, b.y)
+  local x1 = math.min(spr.width - 1, b.x + b.width - 1)
+  local y1 = math.min(spr.height - 1, b.y + b.height - 1)
+  for y = y0, y1 do
+    for x = x0, x1 do
+      if sel:contains(x, y) then img:drawPixel(x, y, white) end
+    end
+  end
+  local p = tempPath("mask.png")
+  img:saveAs(p)
+  return b64.encode(readFile(p))
+end
+
+-- Server images arrive as raw RGBA bytes and become an in-memory Image.
+-- No temp PNG + Image{fromFile}: that spammed Aseprite's Recent Files.
+function S.imageFromPayload(spec, n)
+  if type(spec) == "string" then  -- older server still sends PNG base64
+    local p = tempPath("variant" .. n .. ".png")
+    writeFile(p, b64.decode(spec))
+    return Image{ fromFile = p }
+  end
+  local img = Image(spec.w, spec.h, ColorMode.RGB)
+  img.bytes = b64.decode(spec.px)
+  return img
+end
+
+-- {r,g,b} rows of an Aseprite Palette, or nil if empty.
+function S.paletteColors(pal)
+  if not pal then return nil end
+  local colors = {}
+  for i = 0, #pal - 1 do
+    local c = pal:getColor(i)
+    colors[#colors + 1] = { c.red, c.green, c.blue }
+  end
+  return #colors > 0 and colors or nil
+end
+
+-- Only the palette swatches selected in Aseprite's color bar; nil if none.
+function S.selectedPalette()
+  local spr = app.sprite
+  local idx = app.range and app.range.colors
+  if not spr or not idx or #idx == 0 then return nil end
+  local pal = spr.palettes[1]
+  local colors = {}
+  for _, i in ipairs(idx) do
+    local c = pal:getColor(i)
+    colors[#colors + 1] = { c.red, c.green, c.blue }
+  end
+  return #colors > 0 and colors or nil
+end
+
+-- Active sprite's whole palette; nil when no sprite is open.
+function S.spritePalette()
+  local spr = app.sprite
+  return spr and S.paletteColors(spr.palettes[1]) or nil
+end
+
+-- Palette loaded from a .gpl/.pal/.png/.aseprite file; nil on failure.
+function S.paletteFromFile(path)
+  if not path or path == "" then return nil end
+  local ok, pal = pcall(function() return Palette{ fromFile = path } end)
+  return (ok and pal) and S.paletteColors(pal) or nil
+end
+
+-- Flatten each frame in a range to base64 PNG; used when animation needs a
+-- starting frame from the current sprite.
+function S.exportFrameRange(startFrame, endFrame)
+  local spr = app.sprite
+  local out = {}
+  for i = startFrame, endFrame do
+    local img = Image(spr.width, spr.height)
+    img:drawSprite(spr, i)
+    local p = tempPath("frame_" .. i .. ".png")
+    img:saveAs(p)
+    local data = readFile(p)
+    if data then out[#out + 1] = b64.encode(data) end
+  end
+  return out
+end
+
+-- Insert animation frames into the timeline as a new layer, one cel per frame.
+-- All in one transaction for single undo.
+function S.insertAnimation(imgs, durations, layerName)
+  local spr = app.sprite
+  if not spr then
+    spr = Sprite(imgs[1].width, imgs[1].height)
+  end
+  app.transaction("Pixagon: insert animation", function()
+    local layer = spr:newLayer()
+    layer.name = layerName or "Pixagon Anim"
+    for i, img in ipairs(imgs) do
+      while #spr.frames < i do
+        spr:newFrame(#spr.frames + 1)
+      end
+      spr:newCel(layer, spr.frames[i], img, Point(0, 0))
+      spr.frames[i].duration = (durations[i] or 125) / 1000.0
+    end
+  end)
+  app.refresh()
+end
+
+local function eachLayer(layers, fn)
+  for _, l in ipairs(layers) do
+    fn(l)
+    if l.isGroup then eachLayer(l.layers, fn) end
+  end
+end
+
+-- hideOthers: also hides every layer that's currently visible, groups included.
+function S.insertAsLayer(img, name, hideOthers)
+  local spr = app.sprite
+  if not spr then
+    spr = Sprite(img.width, img.height)
+    local layer = spr.layers[1]
+    layer.name = name
+    local cel = layer:cel(1)
+    if cel then spr:deleteCel(cel) end
+    spr:newCel(layer, 1, img, Point(0, 0))
+    app.refresh()
+    return { sprite = spr, layer = layer, created = true }
+  end
+  local layer, hidden = nil, {}
+  app.transaction("Pixagon: insert variant", function()
+    if hideOthers then
+      eachLayer(spr.layers, function(l)
+        if l.isVisible then
+          hidden[#hidden + 1] = l
+          l.isVisible = false
+        end
+      end)
+    end
+    layer = spr:newLayer()
+    layer.name = name
+    spr:newCel(layer, app.frame, img, Point(0, 0))
+  end)
+  app.refresh()
+  return { sprite = spr, layer = layer, hidden = hidden }
+end
+
+function S.removeInserted(entry)
+  local ok = pcall(function()
+    if entry.created then
+      entry.sprite:close()  -- closes the untitled sprite without prompting
+    else
+      app.transaction("Pixagon: remove variant", function()
+        entry.sprite:deleteLayer(entry.layer)
+        for _, l in ipairs(entry.hidden or {}) do l.isVisible = true end
+      end)
+    end
+  end)
+  app.refresh()
+  return ok
+end
+
+-- Toggle a variant in/out of the sprite; returns the new inserted entry.
+function S.toggleVariant(inserted, n, img, prefix, hideOthers)
+  if inserted[n] then
+    S.removeInserted(inserted[n])
+    inserted[n] = nil
+    return false
+  end
+  inserted[n] = S.insertAsLayer(img, prefix .. n, hideOthers)
+  return true
+end
+
+return S

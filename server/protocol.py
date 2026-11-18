@@ -1,0 +1,236 @@
+"""JSON-over-WebSocket protocol: requests in, responses out, PNGs as base64."""
+import base64
+import io
+import json
+from dataclasses import dataclass, field
+
+from PIL import Image
+
+VALID_MODES = ("generate", "edit", "inpaint", "instruct", "animate")
+VALID_BACKGROUNDS = ("auto", "remove", "keep")
+MAX_SIDE = 4096      # a sprite side; well past pixel art, guards allocations
+MAX_VARIANTS = 8     # matches the panel's slider
+
+
+class ProtocolError(Exception):
+    pass
+
+
+@dataclass
+class Frame:
+    image: Image.Image | None = None
+    mask: Image.Image | None = None
+
+
+@dataclass
+class AnimationParams:
+    frame_count: int        # 2–32
+    strength: float         # img2img strength (0.10–0.95)
+    loop: bool              # seamless loop (last frame conditioned toward first)
+    fps: int                # target framerate for Aseprite frame durations
+    preset: str | None      # "walk_cycle" | "idle" | "attack" | None
+    prompt_sequence: list[str] | None  # per-frame prompt overrides
+
+
+@dataclass
+class Request:
+    id: str
+    mode: str
+    prompt: str
+    target_size: tuple[int, int]
+    variants: int = 4
+    symmetry: bool = False
+    background: str = "auto"
+    seed: int | None = None  # None = roll a fresh one per variant
+    palette: list[tuple[int, int, int]] | None = None  # None = auto palette
+    frames: list[Frame] = field(default_factory=list)
+    animation: AnimationParams | None = None
+
+
+def image_to_b64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.convert("RGBA").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def image_to_raw(img: Image.Image) -> dict:
+    """RGBA pixel bytes, not PNG: the plugin turns this into an Image in
+    memory (Image.bytes) - loading a PNG via a temp file spams Aseprite's
+    Recent Files list."""
+    rgba = img.convert("RGBA")
+    return {"w": rgba.width, "h": rgba.height,
+            "px": base64.b64encode(rgba.tobytes()).decode("ascii")}
+
+
+def image_from_raw(d: dict) -> Image.Image:
+    return Image.frombytes("RGBA", (int(d["w"]), int(d["h"])),
+                           base64.b64decode(d["px"]))
+
+
+def image_from_b64(s: str) -> Image.Image:
+    try:
+        return Image.open(io.BytesIO(base64.b64decode(s))).convert("RGBA")
+    except Exception as e:
+        raise ProtocolError(f"invalid image data: {e}") from e
+
+
+def _parse_palette(raw) -> list[tuple[int, int, int]] | None:
+    """Pinned colors as [[r,g,b],...]; None means let the server derive one."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ProtocolError("palette must be a non-empty list of [r,g,b]")
+    if len(raw) > 256:
+        raise ProtocolError(f"palette has {len(raw)} colors, max 256")
+    out = []
+    for c in raw:
+        try:
+            r, g, b = int(c[0]), int(c[1]), int(c[2])
+        except (TypeError, ValueError, IndexError, KeyError) as e:
+            raise ProtocolError(f"palette entry must be [r,g,b]: {e}") from e
+        if not all(0 <= v <= 255 for v in (r, g, b)):
+            raise ProtocolError(f"palette rgb must be 0..255, got {(r, g, b)}")
+        out.append((r, g, b))
+    return out
+
+
+def _parse_animation(raw) -> AnimationParams | None:
+    """Parse the optional animation block; None when absent."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProtocolError("animation must be an object")
+    from server.anim_presets import VALID_PRESETS
+    try:
+        frame_count = max(2, min(32, int(raw["frame_count"])))
+        strength = max(0.10, min(0.95, float(raw["strength"])))
+        loop = bool(raw.get("loop", False))
+        fps = max(1, min(60, int(raw.get("fps", 8))))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ProtocolError(f"bad animation field: {e}") from e
+    preset = raw.get("preset")
+    if preset is not None:
+        preset = str(preset)
+        if preset not in VALID_PRESETS:
+            raise ProtocolError(f"unknown animation preset '{preset}'")
+    prompt_sequence = raw.get("prompt_sequence")
+    if prompt_sequence is not None:
+        if not isinstance(prompt_sequence, list):
+            raise ProtocolError("prompt_sequence must be a list of strings")
+        prompt_sequence = [str(s) for s in prompt_sequence]
+    return AnimationParams(frame_count=frame_count, strength=strength,
+                           loop=loop, fps=fps, preset=preset,
+                           prompt_sequence=prompt_sequence)
+
+
+def parse_request(text: str) -> Request:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ProtocolError(f"invalid JSON: {e}") from e
+
+    try:
+        req_id = str(data["id"])
+        mode = str(data["mode"])
+        prompt = str(data["prompt"])
+        w, h = data["target_size"]
+        target_size = (int(w), int(h))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ProtocolError(f"missing/invalid field: {e}") from e
+
+    if mode not in VALID_MODES:
+        raise ProtocolError(f"unknown mode '{mode}'")
+
+    # A cleared Width field sends 0, which used to divide by zero deep in
+    # t2i_size; say so at the boundary instead.
+    if not all(1 <= v <= MAX_SIDE for v in target_size):
+        raise ProtocolError(
+            f"target_size must be 1..{MAX_SIDE} per side, got "
+            f"{target_size[0]}x{target_size[1]}")
+
+    background = str(data.get("background", "auto"))
+    if background not in VALID_BACKGROUNDS:
+        raise ProtocolError(f"unknown background '{background}'")
+
+    frames = []
+    for f in data.get("frames", []):
+        if not isinstance(f, dict):
+            raise ProtocolError("frame entry must be an object")
+        img = image_from_b64(f["image"]) if f.get("image") else None
+        mask = image_from_b64(f["mask"]) if f.get("mask") else None
+        frames.append(Frame(image=img, mask=mask))
+
+    if mode in ("edit", "inpaint", "instruct") and (
+            not frames or frames[0].image is None):
+        raise ProtocolError(f"mode '{mode}' requires a frame image")
+    if mode == "inpaint" and frames[0].mask is None:
+        raise ProtocolError("inpaint requires a mask")
+
+    animation = _parse_animation(data.get("animation"))
+    if mode == "animate" and animation is None:
+        raise ProtocolError("mode 'animate' requires an animation block")
+    if mode != "animate":
+        animation = None  # ignore stray animation blocks on other modes
+
+    seed = data.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as e:
+            raise ProtocolError(f"seed must be an integer: {e}") from e
+        if not 0 <= seed < 2**32:
+            raise ProtocolError(f"seed must be 0..2^32-1, got {seed}")
+
+    variants = max(1, min(MAX_VARIANTS, int(data.get("variants", 4))))
+    if mode == "animate":
+        variants = 1  # animation generates one sequence, not N variants
+
+    return Request(
+        id=req_id, mode=mode, prompt=prompt, target_size=target_size,
+        variants=variants,
+        symmetry=bool(data.get("symmetry", False)),
+        background=background,
+        seed=seed,
+        palette=_parse_palette(data.get("palette")),
+        frames=frames,
+        animation=animation,
+    )
+
+
+def progress_msg(req_id: str, value: float, stage: str | None = None,
+                  frame_index: int | None = None,
+                  frame_total: int | None = None) -> str:
+    data = {"id": req_id, "type": "progress", "value": value}
+    if stage is not None:
+        data["stage"] = stage
+    if frame_index is not None:
+        data["frame_index"] = frame_index
+    if frame_total is not None:
+        data["frame_total"] = frame_total
+    return json.dumps(data)
+
+
+def result_msg(req_id: str, images: list[Image.Image],
+               seeds: list[int] | None = None) -> str:
+    data = {"id": req_id, "type": "result",
+            "images": [image_to_raw(i) for i in images]}
+    if seeds is not None:
+        data["seeds"] = seeds  # one per variant, so a single one can be redone
+    return json.dumps(data)
+
+
+def anim_result_msg(req_id: str, images: list[Image.Image],
+                    durations: list[int], seeds: list[int] | None = None,
+                    loop: bool = False) -> str:
+    """Animation result: frame images + per-frame durations in ms."""
+    data = {"id": req_id, "type": "anim_result",
+            "frame_images": [image_to_raw(i) for i in images],
+            "frame_durations": durations,
+            "loop": loop}
+    if seeds is not None:
+        data["seeds"] = seeds
+    return json.dumps(data)
+
+
+def error_msg(req_id: str, message: str) -> str:
+    return json.dumps({"id": req_id, "type": "error", "message": message})

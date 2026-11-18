@@ -1,0 +1,696 @@
+# Original work Copyright 2026 Valentyn Karachevtsev (SpriteLoom)
+# Licensed under the Apache License, Version 2.0
+# Modifications Copyright 2026 Alessio Russo (Pixagon)
+
+"""FLUX.2 Klein 4B: text-to-image generation and instruction-based editing.
+
+One resident pipeline (~11.5 GB VRAM): 8-bit text encoder + bf16
+transformer. Quantizing the TRANSFORMER breaks t2i (pure noise); the text
+encoder takes 8-bit fine, and the bf16 transformer also edits faster than
+the 8-bit one did.
+
+Runs on NVIDIA (CUDA, Windows and Linux) or Apple Silicon (Metal/MPS,
+macOS). bitsandbytes is CUDA-only, so on a Mac the whole pipeline loads in
+bf16 into unified memory (~16 GB) instead.
+"""
+import contextlib
+import ctypes
+import json
+import logging
+import pathlib
+import random
+import subprocess
+import sys
+from collections.abc import ItemsView
+
+from PIL import Image, ImageChops, ImageFilter
+
+from server.pipeline import BasePipeline
+from server.postprocess import key_color, remove_background
+
+MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"  # the default; see config
+STYLE_SUFFIX = (". Keep the same pixel art style, colors and character design."
+                " Keep the plain solid background color exactly as it is.")
+STEPS = 8          # Klein is step-distilled; more steps drift toward realism
+GUIDANCE = 1.0
+T2I_SUFFIX = (" Flat 2D pixel art game sprite, crisp pixels, flat colors,"
+              " clean outlines, single centered object on a plain solid"
+              " background.")
+INPAINT_SUFFIX = (" Scale and place the new content to fit naturally onto"
+                  " the existing subject; do not enlarge it to fill the"
+                  " entire selection.")
+INPAINT_MARGIN = 2  # sprite pixels grown past the selection, so edge detail survives
+# 512px is plenty for pixel art; 1024px batches overflow 16 GB and WDDM
+# starts paging VRAM through system RAM (observed: 10x+ slowdown).
+MAX_SIDE = 512
+
+# bf16 peaks ~13 GB; only 12+ GB cards get it. Below that, offload is the
+# lossless default.
+BF16_MIN_FREE = 11 * 1024 ** 3
+
+# reading the files is the measured part of the load; the rest is the GPU copy
+READ_SPAN = 0.9
+
+log = logging.getLogger("pixagon.instruct")
+
+
+NO_GPU = ("no supported GPU found. Pixagon needs an NVIDIA GPU with CUDA "
+          "(Windows or Linux) or an Apple Silicon Mac (Metal); there is no "
+          "CPU fallback. If you have one, reinstall PyTorch from the launcher's Install step")
+
+
+def pick_device(torch) -> str | None:
+    """'cuda' (NVIDIA), 'mps' (Apple Silicon), or None when neither works."""
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return None
+
+
+def resolve_mode(mode: str, free_bytes: int, device: str = "cuda") -> str:
+    """Concrete load mode. Explicit modes pass through; 'auto' picks by VRAM.
+
+    Apple Silicon shares one memory pool between CPU and GPU, so offloading
+    buys nothing there: it always loads resident, as 'mps'."""
+    if device == "mps":
+        return "mps"
+    if mode != "auto":
+        return mode
+    return "bf16" if free_bytes >= BF16_MIN_FREE else "offload"
+
+
+def empty_cache(torch, device: str | None) -> None:
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "mps":
+        torch.mps.empty_cache()
+
+
+def generator_device(device: str | None) -> str:
+    # diffusers draws CPU noise and moves it to MPS; that also keeps a seed
+    # giving the same picture on every Mac
+    return "cuda" if device == "cuda" else "cpu"
+
+
+# Image tokens double the edit sequence, so edit chunks are half t2i.
+_CHUNKS = {"bf16": {"t2i": 4, "edit": 2}}
+_LOW_VRAM_CHUNKS = {"t2i": 2, "edit": 1}
+
+
+def chunk_size(mode: str, kind: str) -> int:
+    """Images per pipe call for a resolved mode; smaller on 8 GB paths."""
+    return _CHUNKS.get(mode, _LOW_VRAM_CHUNKS)[kind]
+
+
+def t2i_size(target_size: tuple[int, int],
+             max_side: int = MAX_SIDE) -> tuple[int, int]:
+    """Generation size matching the target aspect: long side ~max_side,
+    both dims multiples of 16."""
+    w, h = target_size
+    scale = max_side / max(w, h)
+    return (max(16, round(w * scale / 16) * 16),
+            max(16, round(h * scale / 16) * 16))
+
+
+def model_folder(model_id: str = MODEL_ID) -> str:
+    """The Hugging Face cache folder name of a repo id."""
+    return "models--" + model_id.replace("/", "--")
+
+
+def snapshot_dir(models_dir: str,
+                 model_id: str = MODEL_ID) -> pathlib.Path | None:
+    """Newest local snapshot of the model, or None if nothing is downloaded."""
+    root = (pathlib.Path(models_dir)
+            / model_folder(model_id) / "snapshots")
+    snaps = sorted((p for p in root.glob("*") if p.is_dir()),
+                   key=lambda p: p.stat().st_mtime)
+    return snaps[-1] if snaps else None
+
+
+def component_bytes(models_dir: str, model_id: str = MODEL_ID) -> dict:
+    """On-disk size of each pipeline component in the newest snapshot."""
+    snap = snapshot_dir(models_dir, model_id)
+    if snap is None:
+        return {}
+    return {d.name: sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            for d in snap.iterdir() if d.is_dir()}
+
+
+def safetensors_expected_size(path: pathlib.Path) -> int:
+    """Total bytes the safetensors header declares; a shorter file is truncated."""
+    with open(path, "rb") as f:
+        header_len = int.from_bytes(f.read(8), "little")
+        header = json.loads(f.read(header_len))
+    end = max((v["data_offsets"][1] for k, v in header.items()
+               if k != "__metadata__" and isinstance(v, dict)), default=0)
+    return 8 + header_len + end
+
+
+def _windows_memory() -> dict:
+    class _MemStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    s = _MemStatus()
+    s.dwLength = ctypes.sizeof(s)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
+    return {"total_ram": s.ullTotalPhys, "free_ram": s.ullAvailPhys,
+            "total_commit": s.ullTotalPageFile,
+            "free_commit": s.ullAvailPageFile, "commit_limited": True}
+
+
+def parse_meminfo(text: str) -> dict | None:
+    """Linux /proc/meminfo -> the same shape as Windows' commit numbers."""
+    kb = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts and parts[0].isdigit():
+            kb[name.strip()] = int(parts[0]) * 1024
+    if "MemTotal" not in kb:
+        return None
+    free = kb.get("MemAvailable", kb.get("MemFree", 0))
+    return {"total_ram": kb["MemTotal"], "free_ram": free,
+            "total_commit": kb["MemTotal"] + kb.get("SwapTotal", 0),
+            "free_commit": free + kb.get("SwapFree", 0),
+            "commit_limited": True}
+
+
+def parse_vm_stat(text: str, total: int) -> dict | None:
+    """macOS vm_stat + hw.memsize. Swap grows on demand there, so the commit
+    figure is only an estimate and never a reason to refuse a load."""
+    lines = text.splitlines()
+    if not lines or total <= 0:
+        return None
+    digits = "".join(c for c in lines[0].split("page size of")[-1]
+                     if c.isdigit())
+    page = int(digits) if digits else 4096
+    pages = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        value = value.strip().rstrip(".")
+        if value.isdigit():
+            pages[name.strip()] = int(value)
+    if not pages:
+        return None
+    free = page * sum(pages.get(k, 0) for k in
+                      ("Pages free", "Pages inactive", "Pages speculative",
+                       "Pages purgeable"))
+    return {"total_ram": total, "free_ram": free, "total_commit": total,
+            "free_commit": free, "commit_limited": False}
+
+
+def _mac_memory() -> dict | None:
+    try:
+        total = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                   capture_output=True, text=True,
+                                   timeout=5).stdout.strip() or 0)
+        stat = subprocess.run(["vm_stat"], capture_output=True, text=True,
+                              timeout=5).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return parse_vm_stat(stat, total)
+
+
+def memory_status() -> dict | None:
+    """Physical and committable memory in bytes (RAM + page file or swap),
+    or None where the OS won't say. commit_limited is False where swap grows
+    by itself (macOS): a low figure there is a warning, never a hard stop."""
+    if sys.platform == "win32":
+        return _windows_memory()
+    if sys.platform == "darwin":
+        return _mac_memory()
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            return parse_meminfo(f.read())
+    except OSError:
+        return None
+
+
+def page_file_hint(platform: str | None = None) -> str:
+    platform = platform or sys.platform
+    if platform == "win32":
+        return "raise the Windows page file"
+    if platform == "darwin":
+        return "free up disk space so macOS can swap"
+    return "add swap space"
+
+
+def _gb(n: float) -> str:
+    return f"{n / 1024 ** 3:.1f} GB"
+
+
+def flatten_to_key(image):
+    """RGB copy on a chroma-key background; black would match pixel-art
+    outlines and the background flood would then eat them."""
+    rgba = image.convert("RGBA")
+    key = key_color(rgba)
+    flat = Image.new("RGB", rgba.size, key)
+    flat.paste(rgba, (0, 0), rgba)
+    return flat, key
+
+
+def _cum_weights(bar, weigh):
+    """Cumulative 0..1 slices of a bar by real weight, None to split evenly."""
+    total = getattr(bar, "total", None) or 0
+    items = getattr(bar, "iterable", None)
+    if not weigh or total <= 0:
+        return None
+    # re-iterable only: consuming a one-shot iterator would eat the load
+    if not isinstance(items, (ItemsView, list, tuple)):
+        return None
+    names = [i[0] if isinstance(i, tuple) else i for i in items]
+    if len(names) != total:
+        return None
+    weights = weigh(names)
+    grand = sum(weights)
+    if grand <= 0:
+        return None
+    cum, run = [0.0], 0.0
+    for w in weights:
+        run += w / grand
+        cum.append(run)
+    return cum
+
+
+@contextlib.contextmanager
+def _report_tqdm(report, weigh=None):
+    """Relay the nested tqdm bars of from_pretrained as one (fraction, label,
+    ceiling), each bar filling its parent's current unit, units sized by
+    weigh(names). diffusers resolves tqdm at call time, so swapping it."""
+    import tqdm as tqdm_lib
+    import tqdm.auto as tqdm_auto
+    real = tqdm_lib.tqdm
+    stack = []  # active bars, outermost first
+    floor = [None, 0.0]  # outermost bar the floor belongs to, value
+
+    def current():
+        frac, span, label = 0.0, 1.0, None
+        for bar in stack:
+            total = getattr(bar, "total", None) or 0
+            if total <= 0:
+                continue
+            seen = getattr(bar, "_seen", None)
+            done = min(max(bar.n if seen is None else seen, 0), total)
+            cum = getattr(bar, "_cum", None)
+            if cum:
+                start = cum[done]
+                unit = cum[min(done + 1, total)] - start
+            else:
+                start = done / total
+                unit = 1.0 / total if done < total else 0.0
+            frac += span * start
+            span *= unit
+            label = (getattr(bar, "desc", "") or "").rstrip(": ") or label
+        return min(frac, 1.0), label, min(frac + span, 1.0)
+
+    def emit():
+        if not stack:
+            return
+        frac, label, ceiling = current()
+        # a fresh outermost bar is a new 0..1 run, not a step back
+        if stack[0] is not floor[0]:
+            floor[:] = [stack[0], 0.0]
+        frac = max(frac, floor[1])
+        floor[1] = frac
+        report(frac, label, max(ceiling, frac))
+
+    class Mirror(real):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._cum = _cum_weights(self, weigh)
+            self._seen = None
+            stack.append(self)
+            emit()
+
+        def __iter__(self):
+            # tqdm keeps the count local and syncs self.n only on redraw
+            self._seen = 0
+            for item in super().__iter__():
+                emit()
+                yield item
+                self._seen += 1
+
+        def update(self, n=1):
+            out = super().update(n)
+            emit()
+            return out
+
+        def close(self):
+            # tqdm closes an iterated bar itself, so fill its span here
+            if self in stack:
+                if self._seen is not None:
+                    self._seen = getattr(self, "total", None) or self._seen
+                emit()
+                stack.remove(self)
+            super().close()
+
+    tqdm_lib.tqdm = Mirror
+    tqdm_auto.tqdm = Mirror
+    try:
+        yield
+    finally:
+        tqdm_lib.tqdm = real
+        tqdm_auto.tqdm = real
+
+
+class KleinPipeline(BasePipeline):
+    def __init__(self, models_dir: str = "models", mode: str = "auto",
+                 model_id: str = MODEL_ID):
+        # any FLUX.2 Klein checkpoint: edits and inpaint need its pipelines
+        self.model_id = model_id or MODEL_ID
+        self.models_dir = models_dir
+        self.mode = mode
+        self._resolved = None
+        self._device = None
+        self._pipe = None
+        self._inpaint_pipe = None
+
+    def _preflight(self, free_vram=None, total_vram=None):
+        """Fail with a clear reason before a doomed load, not a native crash."""
+        snap = snapshot_dir(self.models_dir, self.model_id)
+        if snap is None:
+            raise RuntimeError(
+                "model is not downloaded yet; download it in the launcher's "
+                "Model step before starting the server")
+        files = sorted(snap.rglob("*.safetensors"))
+        if not files:
+            raise RuntimeError(
+                f"no weight files under {snap}; the download is incomplete, "
+                "download it again in the launcher's Model step")
+        log.info("checking %d model file(s)...", len(files))
+        total = largest = text_encoder = 0
+        for f in files:
+            actual = f.stat().st_size
+            try:
+                expected = safetensors_expected_size(f)
+            except (OSError, ValueError):
+                raise RuntimeError(
+                    f"{f.name} is unreadable or not valid safetensors; delete "
+                    "the model folder and re-download it in the Model step")
+            if actual < expected:
+                raise RuntimeError(
+                    f"{f.name} is incomplete ({_gb(actual)} of {_gb(expected)});"
+                    " the download was cut short. Delete the model folder and "
+                    "re-download it in the Model step")
+            total += expected
+            largest = max(largest, expected)
+            if f.parent.name == "text_encoder":
+                text_encoder += expected
+        log.info("model files complete (%s on disk)", _gb(total))
+
+        vram = (f", {_gb(free_vram)} VRAM free of {_gb(total_vram)}"
+               if free_vram is not None else "")
+        mem = memory_status()
+        if mem is None:
+            if vram:
+                log.info("memory: %s", vram.lstrip(", "))
+            return
+        log.info("memory: %s RAM free, %s committable (RAM + page file)%s",
+                 _gb(mem["free_ram"]), _gb(mem["free_commit"]), vram)
+        hint = page_file_hint()
+        if self._resolved == "mps":
+            # unified memory: the whole bf16 pipeline lives in RAM
+            if mem["total_ram"] < total * 1.1:
+                log.warning(
+                    "this Mac has %s of memory for a %s model; expect heavy "
+                    "swapping. 24 GB or more is recommended",
+                    _gb(mem["total_ram"]), _gb(total))
+            return
+        if self._resolved != "offload":
+            return  # bf16 lives on the GPU; system RAM is not the bottleneck
+        # offload holds the model in RAM; an uncommittable component segfaults
+        need = largest * 1.15
+        if mem["free_commit"] < need and mem.get("commit_limited", True):
+            raise RuntimeError(
+                f"not enough memory to load the model: {_gb(mem['free_commit'])}"
+                f" committable, need at least {_gb(need)} for the largest "
+                f"component. Close other apps or {hint}, then start again")
+        # offload loads the text encoder 8-bit, so it costs ~half its bf16 size
+        resident = total - text_encoder / 2
+        if mem["free_commit"] < resident * 1.1:
+            log.warning(
+                "low memory headroom (%s free vs %s model); the load will page "
+                "to disk and run slowly. To speed it up, %s",
+                _gb(mem["free_commit"]), _gb(resident), hint)
+
+    def load(self):
+        if self._pipe is not None:
+            return
+        from server import models
+        log.info("Importing torch...")
+        models.set_load_progress(0.0, "Importing torch")
+        import gc
+        import torch
+        from diffusers import Flux2KleinPipeline
+        # quiet third-party spam; set after import, the hub resets its own level
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        # benign per-matmul notice that 8-bit casts bf16 inputs to fp16
+        logging.getLogger("bitsandbytes.autograd._functions").setLevel(logging.ERROR)
+        self._device = pick_device(torch)
+        if self._device is None:
+            raise RuntimeError(NO_GPU)
+        cuda = self._device == "cuda"
+        free, total_vram = torch.cuda.mem_get_info() if cuda else (0, None)
+        self._resolved = resolve_mode(self.mode, free, self._device)
+        if not cuda and self.mode != "auto":
+            log.info("VRAM mode %r applies to NVIDIA cards; Apple Silicon "
+                     "always loads the model resident", self.mode)
+        mode_desc = (f"auto (selected {self._resolved})" if self.mode == "auto"
+                    else self._resolved)
+        log.info("mode %s", mode_desc)
+        log.info("loading %s...", self.model_id)
+        self._preflight(free_vram=free if cuda else None, total_vram=total_vram)
+        log.info("Reading model files...")
+        models.set_load_progress(0.0, "Reading model files")
+        builders = {"offload": self._build_offload, "mps": self._build_mps}
+        build = builders.get(self._resolved, self._build_bf16)
+        # two 7 GB components carry the wait; equal steps would misplace it
+        sizes = component_bytes(self.models_dir, self.model_id)
+        weigh = lambda names: [sizes.get(n, 0) for n in names]
+        def report(v, stage=None, ceiling=None):
+            models.set_load_progress(
+                v * READ_SPAN, stage,
+                ceiling=None if ceiling is None else ceiling * READ_SPAN)
+        with _report_tqdm(report, weigh=weigh):
+            self._pipe = build(torch, Flux2KleinPipeline)
+        log.info("Finishing up...")
+        models.set_load_progress(1.0, "Finishing up")
+        # progress already goes to clients via callback_on_step_end
+        self._pipe.set_progress_bar_config(disable=True)
+        self._pipe.vae.enable_slicing()
+        gc.collect()
+        empty_cache(torch, self._device)
+        log.info("klein pipeline ready (%s)", self._resolved)
+
+    def _to_cuda(self, pipe):
+        from server import models
+        log.info("Moving model to GPU...")
+        models.set_load_progress(READ_SPAN, "Moving model to GPU",
+                                 ceiling=0.99)
+        return pipe.to("cuda")
+
+    def _build_bf16(self, torch, Pipe):
+        """12+ GB resident: 8-bit text encoder + bf16 transformer."""
+        try:
+            from diffusers import PipelineQuantizationConfig
+            quant = PipelineQuantizationConfig(
+                quant_backend="bitsandbytes_8bit",
+                quant_kwargs={"load_in_8bit": True},
+                components_to_quantize=["text_encoder"],
+            )
+            pipe = Pipe.from_pretrained(
+                self.model_id, torch_dtype=torch.bfloat16,
+                cache_dir=self.models_dir,
+                quantization_config=quant)
+            return self._to_cuda(pipe)
+        except Exception:
+            log.exception("resident load failed; falling back to CPU "
+                          "offload (slower, ~16 GB of system RAM)")
+            pipe = Pipe.from_pretrained(
+                self.model_id, torch_dtype=torch.bfloat16,
+                cache_dir=self.models_dir)
+            pipe.enable_model_cpu_offload()
+            return pipe
+
+    def _build_mps(self, torch, Pipe):
+        """Apple Silicon: no bitsandbytes there, so the whole pipeline loads
+        bf16 and moves to the Metal device in one go."""
+        from server import models
+        pipe = Pipe.from_pretrained(self.model_id, torch_dtype=torch.bfloat16,
+                                    cache_dir=self.models_dir)
+        log.info("Moving model to GPU (Metal)...")
+        models.set_load_progress(READ_SPAN, "Moving model to GPU",
+                                 ceiling=0.99)
+        return pipe.to("mps")
+
+    def _build_offload(self, torch, Pipe):
+        """8 GB path: 8-bit text encoder + bf16 transformer, streamed off the GPU.
+        The bf16 transformer alone is ~8 GB, so only layer-level offload fits."""
+        try:
+            from diffusers import PipelineQuantizationConfig
+            quant = PipelineQuantizationConfig(
+                quant_backend="bitsandbytes_8bit",
+                quant_kwargs={"load_in_8bit": True},
+                components_to_quantize=["text_encoder"],
+            )
+            pipe = Pipe.from_pretrained(
+                self.model_id, torch_dtype=torch.bfloat16,
+                cache_dir=self.models_dir,
+                quantization_config=quant)
+            pipe.enable_sequential_cpu_offload()
+            return pipe
+        except Exception:
+            log.exception("8-bit offload failed; falling back to bf16 offload "
+                          "(works, but holds the full model in system RAM)")
+            import gc
+            gc.collect()
+            empty_cache(torch, self._device)
+            pipe = Pipe.from_pretrained(
+                self.model_id, torch_dtype=torch.bfloat16,
+                cache_dir=self.models_dir)
+            pipe.enable_sequential_cpu_offload()
+            return pipe
+
+    def _generators(self, seeds):
+        import torch
+        device = generator_device(self._device or "cuda")
+        return [torch.Generator(device=device).manual_seed(s) for s in seeds]
+
+    def _cb(self, on_progress, done, chunk, total):
+        if on_progress is None:
+            return None
+        def cb(pipe, step, timestep, kw):
+            frac = (done + chunk * (step + 1) / STEPS) / total
+            on_progress(min(1.0, frac))
+            return kw
+        return cb
+
+    @staticmethod
+    def _prep_input(image):
+        """Integer-factor upscale + pad to model-friendly dims; a fractional
+        upscale shows stretched pixels and comes back off-grid and wobbly."""
+        flat, key = flatten_to_key(image)
+        w, h = flat.size
+        k = max(1, MAX_SIDE // max(w, h))
+        big = flat.resize((w * k, h * k), Image.NEAREST)
+        pw = -(-big.width // 16) * 16
+        ph = -(-big.height // 16) * 16
+        canvas = Image.new("RGB", (pw, ph), key)
+        canvas.paste(big, (0, 0))
+        return canvas, (big.width, big.height)
+
+    def edit_by_instruction(self, instruction, image, variants=4,
+                            on_progress=None, seeds=None):
+        self.load()
+        big, (bw, bh) = self._prep_input(image)
+        seeds = seeds or self.variant_seeds(None, variants)
+        out = []
+        cap = chunk_size(self._resolved, "edit")
+        while len(out) < variants:
+            chunk = min(cap, variants - len(out))
+            imgs = self._pipe(
+                prompt=instruction + STYLE_SUFFIX,
+                image=big,
+                width=big.size[0], height=big.size[1],
+                guidance_scale=GUIDANCE,
+                num_inference_steps=STEPS,
+                num_images_per_prompt=chunk,
+                generator=self._generators(seeds[len(out):len(out) + chunk]),
+                callback_on_step_end=self._cb(on_progress, len(out), chunk,
+                                              variants),
+            ).images
+            out.extend(img.crop((0, 0, bw, bh)) for img in imgs)
+        return [i.convert("RGBA") for i in out]
+
+    def _inpaint_pipe_obj(self):
+        """Shares the resident pipe's already-placed modules (same VRAM, no
+        reload) instead of holding a second copy of the model."""
+        if self._inpaint_pipe is None:
+            from diffusers import Flux2KleinInpaintPipeline
+            self._inpaint_pipe = Flux2KleinInpaintPipeline(
+                vae=self._pipe.vae, text_encoder=self._pipe.text_encoder,
+                tokenizer=self._pipe.tokenizer, scheduler=self._pipe.scheduler,
+                transformer=self._pipe.transformer)
+        return self._inpaint_pipe
+
+    @staticmethod
+    def _prep_mask(mask, canvas_size, content_size):
+        """Same upscale/pad as _prep_input, so pixel (x, y) lines up in both."""
+        resized = mask.convert("L").resize(content_size, Image.NEAREST)
+        scale = max(1, content_size[0] // mask.width)
+        margin = INPAINT_MARGIN * scale
+        if margin > 0:
+            resized = resized.filter(ImageFilter.MaxFilter(margin * 2 + 1))
+        canvas = Image.new("L", canvas_size, 0)
+        canvas.paste(resized, (0, 0))
+        return canvas
+
+    def inpaint(self, prompt, image, mask, variants=4, on_progress=None,
+                seeds=None):
+        """Real masked diffusion: unmasked latents are locked to the source
+        at every step, so the model sees full context while drawing. The
+        result still keeps only the masked region though - everything else
+        goes fully transparent, so the inserted layer is just the new
+        content, not a redundant copy of the untouched sprite."""
+        self.load()
+        pipe = self._inpaint_pipe_obj()
+        big, (bw, bh) = self._prep_input(image)
+        big_mask = self._prep_mask(mask, big.size, (bw, bh))
+        blank = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        mask_content = big_mask.crop((0, 0, bw, bh))
+        seeds = seeds or self.variant_seeds(None, variants)
+        out = []
+        cap = chunk_size(self._resolved, "edit")  # same image-conditioned cost
+        while len(out) < variants:
+            chunk = min(cap, variants - len(out))
+            imgs = pipe(
+                prompt=prompt + STYLE_SUFFIX + INPAINT_SUFFIX,
+                image=big, mask_image=big_mask,
+                strength=1.0,  # full STEPS-step schedule; the model is distilled for it
+                guidance_scale=GUIDANCE,
+                num_inference_steps=STEPS,
+                num_images_per_prompt=chunk,
+                generator=self._generators(seeds[len(out):len(out) + chunk]),
+                callback_on_step_end=self._cb(on_progress, len(out), chunk,
+                                              variants),
+            ).images
+            for img in imgs:
+                full = img.crop((0, 0, bw, bh)).convert("RGBA")
+                cleaned = remove_background(full, tolerance=16)
+                keep = ImageChops.multiply(mask_content, cleaned.getchannel("A"))
+                comp = blank.copy()
+                comp.paste(cleaned, (0, 0), keep)
+                out.append(comp)
+        return out
+
+    def txt2img(self, prompt, target_size, variants=4, on_progress=None,
+                seeds=None):
+        self.load()
+        w, h = t2i_size(target_size)
+        seeds = seeds or self.variant_seeds(None, variants)
+        out = []
+        cap = chunk_size(self._resolved, "t2i")
+        while len(out) < variants:
+            chunk = min(cap, variants - len(out))
+            out += self._pipe(
+                prompt=prompt + T2I_SUFFIX,
+                width=w, height=h,
+                num_inference_steps=STEPS,
+                guidance_scale=GUIDANCE,
+                num_images_per_prompt=chunk,
+                generator=self._generators(seeds[len(out):len(out) + chunk]),
+                callback_on_step_end=self._cb(on_progress, len(out), chunk,
+                                              variants),
+            ).images
+        return [i.convert("RGBA") for i in out]

@@ -1,0 +1,183 @@
+import json
+import pytest
+from PIL import Image
+from server.protocol import (
+    ProtocolError, parse_request, progress_msg, result_msg, error_msg,
+    image_to_b64, image_from_b64,
+)
+
+
+def _red_16():
+    return Image.new("RGBA", (16, 16), (255, 0, 0, 255))
+
+
+def test_image_b64_roundtrip():
+    img = _red_16()
+    out = image_from_b64(image_to_b64(img))
+    assert out.size == (16, 16)
+    assert out.getpixel((0, 0)) == (255, 0, 0, 255)
+
+
+def test_parse_generate_request_defaults():
+    req = parse_request(json.dumps({
+        "id": "r1", "mode": "generate", "prompt": "demonic sword",
+        "target_size": [64, 64], "frames": [],
+    }))
+    assert req.id == "r1"
+    assert req.mode == "generate"
+    assert req.variants == 4
+    assert req.target_size == (64, 64)
+    assert req.frames == []
+    assert req.background == "auto"
+
+
+def test_parse_background_field():
+    req = parse_request(json.dumps({
+        "id": "r1b", "mode": "generate", "prompt": "sword",
+        "target_size": [64, 64], "frames": [], "background": "keep",
+    }))
+    assert req.background == "keep"
+
+
+def test_parse_background_rejects_unknown():
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "r1c", "mode": "generate", "prompt": "sword",
+            "target_size": [64, 64], "frames": [], "background": "maybe",
+        }))
+
+
+def test_parse_edit_request_decodes_frame():
+    b64 = image_to_b64(_red_16())
+    req = parse_request(json.dumps({
+        "id": "r2", "mode": "edit", "prompt": "horse on two legs",
+        "target_size": [16, 16],
+        "frames": [{"image": b64, "mask": None}],
+    }))
+    assert len(req.frames) == 1
+    assert req.frames[0].image.size == (16, 16)
+    assert req.frames[0].mask is None
+
+
+def test_parse_rejects_bad_mode():
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "x", "mode": "dream", "prompt": "p",
+            "target_size": [16, 16], "frames": [],
+        }))
+
+
+def test_parse_rejects_edit_without_frame():
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "x", "mode": "edit", "prompt": "p",
+            "target_size": [16, 16], "frames": [],
+        }))
+
+
+def test_parse_rejects_invalid_json():
+    with pytest.raises(ProtocolError):
+        parse_request("{not json")
+
+
+def test_parse_rejects_non_dict_frame():
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "x", "mode": "generate", "prompt": "p",
+            "target_size": [16, 16], "frames": [42],
+        }))
+
+
+def test_parse_rejects_inpaint_without_mask():
+    b64 = image_to_b64(_red_16())
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "x", "mode": "inpaint", "prompt": "p",
+            "target_size": [16, 16],
+            "frames": [{"image": b64, "mask": None}],
+        }))
+
+
+def test_response_builders():
+    assert json.loads(progress_msg("r1", 0.5)) == {
+        "id": "r1", "type": "progress", "value": 0.5}
+    res = json.loads(result_msg("r1", [_red_16()]))
+    assert res["type"] == "result" and len(res["images"]) == 1
+    from server.protocol import image_from_raw
+    img = image_from_raw(res["images"][0])
+    assert img.size == (16, 16)
+    assert img.getpixel((0, 0)) == (255, 0, 0, 255)
+    err = json.loads(error_msg("r1", "boom"))
+    assert err == {"id": "r1", "type": "error", "message": "boom"}
+
+
+def test_parse_instruct_requires_frame_image():
+    with pytest.raises(ProtocolError):
+        parse_request(json.dumps({
+            "id": "x", "mode": "instruct", "prompt": "side view",
+            "target_size": [16, 16], "frames": [],
+        }))
+
+
+def test_parse_instruct_accepts_frame():
+    b64 = image_to_b64(_red_16())
+    req = parse_request(json.dumps({
+        "id": "i1", "mode": "instruct", "prompt": "side view",
+        "target_size": [16, 16],
+        "frames": [{"image": b64, "mask": None}],
+    }))
+    assert req.mode == "instruct"
+    assert req.frames[0].image.size == (16, 16)
+
+
+def test_progress_msg_stage_optional():
+    assert "stage" not in json.loads(progress_msg("r", 0.5))
+    msg = json.loads(progress_msg("r", 0.0, stage="Loading model..."))
+    assert msg["stage"] == "Loading model..."
+    assert msg["type"] == "progress"
+
+
+def test_rejects_target_size_out_of_range():
+    for size in ([0, 0], [64, 0], [-8, 64], [99999, 99999]):
+        with pytest.raises(ProtocolError, match="target_size"):
+            parse_request(json.dumps({
+                "id": "r", "mode": "generate", "prompt": "p",
+                "target_size": size,
+            }))
+
+
+def test_parse_palette_pins_colors():
+    req = parse_request(json.dumps({
+        "id": "p", "mode": "generate", "prompt": "sword",
+        "target_size": [64, 64], "palette": [[255, 0, 0], [0, 128, 255]],
+    }))
+    assert req.palette == [(255, 0, 0), (0, 128, 255)]
+
+
+def test_parse_palette_defaults_to_none():
+    req = parse_request(json.dumps({
+        "id": "p", "mode": "generate", "prompt": "sword",
+        "target_size": [64, 64],
+    }))
+    assert req.palette is None
+
+
+def test_parse_palette_rejects_bad_shapes():
+    for bad in ([], [[255, 0]], [[256, 0, 0]], [[-1, 0, 0]], [["a", 0, 0]],
+                [[0, 0, 0]] * 257):
+        with pytest.raises(ProtocolError):
+            parse_request(json.dumps({
+                "id": "p", "mode": "generate", "prompt": "sword",
+                "target_size": [64, 64], "palette": bad,
+            }))
+
+
+def test_clamps_variants_to_the_slider_range():
+    def variants(n):
+        return parse_request(json.dumps({
+            "id": "r", "mode": "generate", "prompt": "p",
+            "target_size": [64, 64], "variants": n,
+        })).variants
+    assert variants(10000) == 8
+    assert variants(0) == 1
+    assert variants(3) == 3

@@ -1,0 +1,11 @@
+{
+  "name": "pixagon",
+  "displayName": "Pixagon",
+  "description": "AI pixel-art assistant",
+  "version": "1.2.0",
+  "author": { "name": "Alessio Russo" },
+  "contributes": {
+    "scripts": [{ "path": "./main.lua" }],
+    "keys": [{ "id": "pixagon-keys", "path": "./pixagon.aseprite-keys" }]
+  }
+}

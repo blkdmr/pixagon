@@ -1,0 +1,26 @@
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Setup's own copy of uv
+.tools/
+
+# Models and generation output (large binaries)
+models/
+output/
+
+# disposable preview, regenerated from launcher/ui/index.html
+launcher/ui/preview.html
+# Release secrets and tooling (release/build.sh, release/publish.sh); build/ and dist/ above
+# already cover release/build and release/dist
+.env
+release/
+
+*.aseprite
+
+*.md
+!README.md
+!THIRD_PARTY_NOTICES.md
+!CONTRIBUTING.md

@@ -1,0 +1,3 @@
+# The supervisor (python -m launcher.daemon) needs only this; the plugin runs
+# it with `uv run --no-project --with websockets`, so nothing gets installed.
+websockets>=12.0

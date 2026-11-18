@@ -1,0 +1,7 @@
+# What the server needs with a cloud provider (OpenRouter): no GPU stack.
+# requirements.txt adds the local-model packages on top of these.
+websockets>=12.0
+Pillow>=10.0
+numpy>=1.26
+scipy>=1.11
+pytest>=8.0
