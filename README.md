@@ -63,6 +63,12 @@ One file works on every OS. Everything Pixagon downloads lives in a per-user fol
 
 Pixagon is free, or pay what you want. The source stays open if you prefer to build it yourself.
 
+<p align="center">
+  <a href="https://blkdmr.itch.io/pixagon"><img src="https://static.itch.io/images/badge-color.svg" height="60" alt="Available on itch.io"></a>
+</p>
+
+<iframe frameborder="0" src="https://itch.io/embed/5388916?bg_color=1a0a14&amp;fg_color=f0dcd0&amp;link_color=db7334&amp;border_color=3e3641" width="552" height="167"><a href="https://blkdmr.itch.io/pixagon">Pixagon by blkdmr</a></iframe>
+
 ## Status
 
 The single-file extension is new. It has been run end to end on Linux with the OpenRouter provider. The local model on Windows and macOS still needs more real-hardware testing. If something misbehaves, please report what you see in the comments or on GitHub.
