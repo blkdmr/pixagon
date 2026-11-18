@@ -8,8 +8,6 @@ Generate sprites from a text prompt, edit an existing sprite with a plain instru
 
 Pixagon is an Aseprite extension. You stay in the editor the whole time. Results open in a side window, and a click drops one into your sprite as a new layer. Pixagon never edits your existing pixels.
 
-<iframe frameborder="0" src="https://itch.io/embed/5388916?bg_color=1a0a14&amp;fg_color=f0dcd0&amp;link_color=db7334&amp;border_color=3e3641" width="552" height="167"><a href="https://blkdmr.itch.io/pixagon">Pixagon by blkdmr</a></iframe>
-
 <p align="center">
   <img src="assets/goblin.png" width="160" alt="Goblin with a dagger">
   <img src="assets/cottage.png" width="160" alt="Timber cottage">
