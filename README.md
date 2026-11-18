@@ -8,8 +8,13 @@ Generate sprites from a text prompt, edit an existing sprite with a plain instru
 
 Pixagon is an Aseprite extension. You stay in the editor the whole time. Results open in a side window, and a click drops one into your sprite as a new layer. Pixagon never edits your existing pixels.
 
-Goblin with a dagger · Timber cottage · Gold coin with a crown · Adventurer in a leather coat
-*Made with Pixagon, one generation each.*
+<p align="center">
+  <img src="assets/goblin.png" width="160" alt="Goblin with a dagger">
+  <img src="assets/cottage.png" width="160" alt="Timber cottage">
+  <img src="assets/coin.png" width="160" alt="Gold coin with a crown">
+  <img src="assets/adventurer.png" width="160" alt="Adventurer in a leather coat">
+</p>
+<p align="center"><em>Made with Pixagon, one generation each.</em></p>
 
 ## What it does
 
@@ -18,8 +23,11 @@ Goblin with a dagger · Timber cottage · Gold coin with a crown · Adventurer i
 **Inpaint Selection:** the same, but it only touches the region you selected.
 **Rotate + Instruct:** view the same subject from another angle, for turnarounds.
 
-Tall man in a cloak, three-quarter view · The same man seen from the front
-*Rotate + Instruct: the same character from two angles.*
+<p align="center">
+  <img src="assets/tall-man.png" width="160" alt="Tall man in a cloak, three-quarter view">
+  <img src="assets/tall-man-front.png" width="160" alt="The same man seen from the front">
+</p>
+<p align="center"><em>Rotate + Instruct: the same character from two angles.</em></p>
 
 Output goes through a pixel-art postprocess step: palette quantization, background removal, optional mirror symmetry, and fit-to-canvas, so results land clean at your sprite size.
 
