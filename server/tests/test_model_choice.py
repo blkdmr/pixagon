@@ -11,7 +11,6 @@ from server import config, main, models
 def test_defaults_are_the_local_klein_model(tmp_path):
     s = config.load_model_settings(tmp_path / "none.json", env={})
     assert s["provider"] == "local"
-    assert s["local_model"] == "black-forest-labs/FLUX.2-klein-4B"
     assert s["openrouter_model"] == config.DEFAULT_OPENROUTER_MODEL
     assert s["openrouter_base_url"] == "https://openrouter.ai/api/v1"
     assert s["api_key"] == "" and s["api_key_source"] is None
@@ -32,12 +31,13 @@ def test_saved_choices_round_trip_and_merge(tmp_path):
 
 def test_empty_values_reset_and_bad_provider_is_ignored(tmp_path):
     path = tmp_path / "config.json"
-    config.save_model_settings({"local_model": "me/my-klein",
+    config.save_model_settings({"openrouter_model": "me/my-model",
                                 "openrouter_api_key": "sk-or-1"}, path)
-    config.save_model_settings({"local_model": "", "openrouter_api_key": "",
+    config.save_model_settings({"openrouter_model": "",
+                                "openrouter_api_key": "",
                                 "provider": "nonsense"}, path)
     s = config.load_model_settings(path, env={})
-    assert s["local_model"] == config.DEFAULT_LOCAL_MODEL
+    assert s["openrouter_model"] == config.DEFAULT_OPENROUTER_MODEL
     assert s["api_key"] == ""
     assert s["provider"] == "local"
 

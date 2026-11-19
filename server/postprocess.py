@@ -160,66 +160,6 @@ def snap_to_palette(img: Image.Image, palette: list[tuple[int, int, int]]) -> Im
     return Image.fromarray(out.reshape(h, w, 4), "RGBA")
 
 
-def union_bbox(frames: list[Image.Image],
-               margin: float = 0.04) -> tuple[int, int, int, int] | None:
-    """Opaque bounding box that contains all frames' content, with margin.
-    Returns (x0, y0, x1, y1) or None if all frames are fully transparent."""
-    gx0, gy0, gx1, gy1 = float("inf"), float("inf"), 0, 0
-    for img in frames:
-        arr = np.asarray(img.convert("RGBA"))
-        ys, xs = np.nonzero(arr[:, :, 3])
-        if len(xs) == 0:
-            continue
-        gx0 = min(gx0, int(xs.min()))
-        gy0 = min(gy0, int(ys.min()))
-        gx1 = max(gx1, int(xs.max()) + 1)
-        gy1 = max(gy1, int(ys.max()) + 1)
-    if gx1 == 0:
-        return None
-    ref = max(frames[0].width, frames[0].height)
-    pad = int(margin * ref)
-    x0 = max(gx0 - pad, 0)
-    y0 = max(gy0 - pad, 0)
-    x1 = min(gx1 + pad, frames[0].width)
-    y1 = min(gy1 + pad, frames[0].height)
-    return x0, y0, x1, y1
-
-
-def postprocess_animation(req, frames: list[Image.Image]) -> list[Image.Image]:
-    """Postprocess animation frames: background removal, palette lock, union
-    crop, and fit into target size — all frames treated consistently."""
-    from server.postprocess import (remove_background, fit_into,
-                                    subject_palette, sprite_palette,
-                                    snap_to_palette)
-    # strip background at full res
-    cleaned = []
-    for img in frames:
-        if req.background == "keep":
-            cleaned.append(img.convert("RGBA"))
-        else:
-            cleaned.append(remove_background(
-                img, tolerance=16, force=req.background == "remove"))
-
-    # palette from frame 0 (or request palette) locks colors across frames
-    palette_src = req.frames[0].image if req.frames and req.frames[0].image else None
-    pal = req.palette or (
-        sprite_palette(palette_src) if palette_src is not None
-        else subject_palette(cleaned[0], 16))
-
-    # union bounding box so the character does not bob/shift
-    bbox = union_bbox(cleaned)
-    if bbox is not None:
-        x0, y0, x1, y1 = bbox
-        cleaned = [img.crop((x0, y0, x1, y1)) for img in cleaned]
-
-    # fit all into target size with the same scale factor + snap palette
-    out = []
-    for img in cleaned:
-        small = fit_into(img, req.target_size, palette=pal)
-        out.append(small)
-    return out
-
-
 def remove_background(img: Image.Image, tolerance: int = 12,
                       force: bool = False, step_tol: int = 10,
                       shade_tol: int = 8) -> Image.Image:

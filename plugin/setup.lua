@@ -1,10 +1,10 @@
 -- The Setup dialog: choose the backend and install what it needs. Starting
 -- the server lives on the panel (S.startServer), so Setup is only about
--- getting ready. The provider and local model save as soon as they are
--- picked; the OpenRouter fields save with their own button (or Install).
--- The fields fill once from config.json and the model catalog on disk;
+-- getting ready. The provider saves as soon as it is picked; the
+-- OpenRouter fields save with their own button (or Install). The local
+-- model is always FLUX.2 Klein 4B. The fields fill once from config.json;
 -- polling the supervisor (once a second) only repaints the Install part.
-local pluginDir, bootstrap, control, dataDir = ...
+local _, bootstrap, control, dataDir = ...
 
 -- Aseprite's json.decode returns userdata (indexable, with # and ipairs),
 -- not a table; plain-Lua tests return tables. Either is a decoded object.
@@ -20,8 +20,9 @@ S.PROVIDERS = { "Local GPU", "OpenRouter (cloud)" }
 S.PROVIDER_IDS = { "local", "openrouter" }
 -- mirrors server/config.py (a Python test checks they agree)
 S.DEFAULTS = { provider = "local",
-               local_model = "black-forest-labs/FLUX.2-klein-4B",
                openrouter_model = "google/gemini-2.5-flash-image" }
+-- the one local model and what it asks of the GPU (see server/instruct.py)
+S.LOCAL_MODEL_INFO = "FLUX.2 Klein 4B, ~11.5 GB VRAM (8 GB with offload)"
 -- rows Install can fix; the API key is typed, never installed
 local INSTALLABLE = { uv = true, venv = true, torch = true, deps = true,
                       model = true }
@@ -53,60 +54,9 @@ function S.initial(cfg, envKey)
   return {
     provider = indexOf(S.PROVIDER_IDS, cfg.provider) and cfg.provider
                or S.DEFAULTS.provider,
-    local_model = text(cfg.local_model) or S.DEFAULTS.local_model,
     openrouter_model = text(cfg.openrouter_model) or S.DEFAULTS.openrouter_model,
     keyState = key,
   }
-end
-
--- Every catalog model as a picker entry; planned ones are listed but marked.
--- A saved custom repo is added, so opening Setup never changes the model.
-function S.localModels(catalog, current)
-  local models = {}
-  for _, e in ipairs(catalog or {}) do
-    local planned = e.status ~= "supported"
-    models[#models + 1] = {
-      id = e.id, entry = e, planned = planned,
-      name = e.name .. " (" .. e.params .. ")" .. (planned and " (planned)" or ""),
-    }
-  end
-  local known = false
-  for _, m in ipairs(models) do known = known or m.id == current end
-  if current and not known then
-    models[#models + 1] = { id = current, name = current, planned = false }
-  end
-  return models
-end
-
-function S.names(models)
-  local out = {}
-  for i, m in ipairs(models) do out[i] = m.name end
-  return out
-end
-
-function S.byName(models, name)
-  for _, m in ipairs(models) do if m.name == name then return m end end
-  return nil
-end
-
--- One line about what a model asks of the GPU
-function S.modelInfo(model)
-  if not model then return "" end
-  if model.planned then return "Not supported yet." end
-  local e = model.entry
-  if not e then return "Custom Hugging Face repo." end
-  local parts = {}
-  -- %g: JSON numbers arrive as floats (8.0), shown as people write them (8)
-  local full = e.vram_bf16 or (e.vram and e.vram.bf16)
-  if full then
-    parts[#parts + 1] = string.format("~%g GB VRAM", full)
-  end
-  local offload = e.vram_offload or (e.vram and e.vram.offload)
-  if offload then
-    parts[#parts + 1] = string.format("%g GB with offload (picked automatically)",
-                                      offload)
-  end
-  return S.clip(table.concat(parts, ", "))
 end
 
 -- One check row as a line: "[ok] Virtual environment: .venv"
@@ -193,25 +143,14 @@ local function readConfig()
                   or app.fs.joinPath(dataDir, "config.json"))
 end
 
-local function readCatalog()
-  local osName = bootstrap.osName()
-  local root = bootstrap.codeRoot(pluginDir, osName, app.fs.isFile)
-  local data = root and readJson(app.fs.joinPath(
-    app.fs.joinPath(root, "server"), "model_catalog.json"))
-  return data and data.models or {}
-end
-
 -- ---------------------------------------------------------------- dialog
 
 local dlg = nil
 local pollTimer = nil
 local viewBusy = false
 local lastSetup = nil     -- the setup part of the latest view
-local models = {}
-local modelName = nil     -- the picker's last accepted choice
 
 local function showProvider(isLocal)
-  dlg:modify{ id = "localModel", visible = isLocal }
   dlg:modify{ id = "modelInfo", visible = isLocal }
   dlg:modify{ id = "orModel", visible = not isLocal }
   dlg:modify{ id = "apiKey", visible = not isLocal }
@@ -286,13 +225,7 @@ end
 function S.open()
   if dlg then return end
   local init = S.initial(readConfig(), os.getenv("OPENROUTER_API_KEY"))
-  models = S.localModels(readCatalog(), init.local_model)
   local isLocal = init.provider == "local"
-  local current
-  for _, m in ipairs(models) do
-    if m.id == init.local_model then current = m end
-  end
-  modelName = current and current.name
   lastSetup = nil
 
   dlg = Dialog{ title = "Pixagon Setup", onclose = function()
@@ -308,21 +241,8 @@ function S.open()
     showProvider(i == 1)
     save({ provider = S.PROVIDER_IDS[i] })
   end }
-  dlg:combobox{ id = "localModel", label = "Model:", options = S.names(models),
-                option = modelName, visible = isLocal, onchange = function()
-    local m = S.byName(models, dlg.data.localModel)
-    if not m or m.planned then
-      -- listed so the roadmap is visible, but there is no pipeline yet
-      note((m and m.entry and m.entry.name or "That model") ..
-           " is not supported yet.")
-      dlg:modify{ id = "localModel", option = modelName }
-      return
-    end
-    modelName = m.name
-    dlg:modify{ id = "modelInfo", text = S.modelInfo(m) }
-    save({ local_model = m.id })
-  end }
-  dlg:label{ id = "modelInfo", text = S.modelInfo(current), visible = isLocal }
+  dlg:label{ id = "modelInfo", label = "Model:", text = S.LOCAL_MODEL_INFO,
+             visible = isLocal }
   dlg:entry{ id = "orModel", label = "Model:", text = init.openrouter_model,
              visible = not isLocal }
   dlg:entry{ id = "apiKey", label = "API key:", text = "",

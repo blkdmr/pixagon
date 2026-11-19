@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image
 
-VALID_MODES = ("generate", "edit", "inpaint", "instruct", "animate")
+VALID_MODES = ("generate", "edit", "inpaint", "instruct")
 VALID_BACKGROUNDS = ("auto", "remove", "keep")
 MAX_SIDE = 4096      # a sprite side; well past pixel art, guards allocations
 MAX_VARIANTS = 8     # matches the panel's slider
@@ -23,16 +23,6 @@ class Frame:
 
 
 @dataclass
-class AnimationParams:
-    frame_count: int        # 2–32
-    strength: float         # img2img strength (0.10–0.95)
-    loop: bool              # seamless loop (last frame conditioned toward first)
-    fps: int                # target framerate for Aseprite frame durations
-    preset: str | None      # "walk_cycle" | "idle" | "attack" | None
-    prompt_sequence: list[str] | None  # per-frame prompt overrides
-
-
-@dataclass
 class Request:
     id: str
     mode: str
@@ -44,7 +34,6 @@ class Request:
     seed: int | None = None  # None = roll a fresh one per variant
     palette: list[tuple[int, int, int]] | None = None  # None = auto palette
     frames: list[Frame] = field(default_factory=list)
-    animation: AnimationParams | None = None
 
 
 def image_to_b64(img: Image.Image) -> str:
@@ -94,35 +83,6 @@ def _parse_palette(raw) -> list[tuple[int, int, int]] | None:
     return out
 
 
-def _parse_animation(raw) -> AnimationParams | None:
-    """Parse the optional animation block; None when absent."""
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise ProtocolError("animation must be an object")
-    from server.anim_presets import VALID_PRESETS
-    try:
-        frame_count = max(2, min(32, int(raw["frame_count"])))
-        strength = max(0.10, min(0.95, float(raw["strength"])))
-        loop = bool(raw.get("loop", False))
-        fps = max(1, min(60, int(raw.get("fps", 8))))
-    except (KeyError, TypeError, ValueError) as e:
-        raise ProtocolError(f"bad animation field: {e}") from e
-    preset = raw.get("preset")
-    if preset is not None:
-        preset = str(preset)
-        if preset not in VALID_PRESETS:
-            raise ProtocolError(f"unknown animation preset '{preset}'")
-    prompt_sequence = raw.get("prompt_sequence")
-    if prompt_sequence is not None:
-        if not isinstance(prompt_sequence, list):
-            raise ProtocolError("prompt_sequence must be a list of strings")
-        prompt_sequence = [str(s) for s in prompt_sequence]
-    return AnimationParams(frame_count=frame_count, strength=strength,
-                           loop=loop, fps=fps, preset=preset,
-                           prompt_sequence=prompt_sequence)
-
-
 def parse_request(text: str) -> Request:
     try:
         data = json.loads(text)
@@ -166,12 +126,6 @@ def parse_request(text: str) -> Request:
     if mode == "inpaint" and frames[0].mask is None:
         raise ProtocolError("inpaint requires a mask")
 
-    animation = _parse_animation(data.get("animation"))
-    if mode == "animate" and animation is None:
-        raise ProtocolError("mode 'animate' requires an animation block")
-    if mode != "animate":
-        animation = None  # ignore stray animation blocks on other modes
-
     seed = data.get("seed")
     if seed is not None:
         try:
@@ -182,8 +136,6 @@ def parse_request(text: str) -> Request:
             raise ProtocolError(f"seed must be 0..2^32-1, got {seed}")
 
     variants = max(1, min(MAX_VARIANTS, int(data.get("variants", 4))))
-    if mode == "animate":
-        variants = 1  # animation generates one sequence, not N variants
 
     return Request(
         id=req_id, mode=mode, prompt=prompt, target_size=target_size,
@@ -193,20 +145,13 @@ def parse_request(text: str) -> Request:
         seed=seed,
         palette=_parse_palette(data.get("palette")),
         frames=frames,
-        animation=animation,
     )
 
 
-def progress_msg(req_id: str, value: float, stage: str | None = None,
-                  frame_index: int | None = None,
-                  frame_total: int | None = None) -> str:
+def progress_msg(req_id: str, value: float, stage: str | None = None) -> str:
     data = {"id": req_id, "type": "progress", "value": value}
     if stage is not None:
         data["stage"] = stage
-    if frame_index is not None:
-        data["frame_index"] = frame_index
-    if frame_total is not None:
-        data["frame_total"] = frame_total
     return json.dumps(data)
 
 
@@ -216,19 +161,6 @@ def result_msg(req_id: str, images: list[Image.Image],
             "images": [image_to_raw(i) for i in images]}
     if seeds is not None:
         data["seeds"] = seeds  # one per variant, so a single one can be redone
-    return json.dumps(data)
-
-
-def anim_result_msg(req_id: str, images: list[Image.Image],
-                    durations: list[int], seeds: list[int] | None = None,
-                    loop: bool = False) -> str:
-    """Animation result: frame images + per-frame durations in ms."""
-    data = {"id": req_id, "type": "anim_result",
-            "frame_images": [image_to_raw(i) for i in images],
-            "frame_durations": durations,
-            "loop": loop}
-    if seeds is not None:
-        data["seeds"] = seeds
     return json.dumps(data)
 
 

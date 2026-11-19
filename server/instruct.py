@@ -25,10 +25,10 @@ from collections.abc import ItemsView
 
 from PIL import Image, ImageChops, ImageFilter
 
+from server.config import LOCAL_MODEL as MODEL_ID
 from server.pipeline import BasePipeline
 from server.postprocess import key_color, remove_background
 
-MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"  # the default; see config
 STYLE_SUFFIX = (". Keep the same pixel art style, colors and character design."
                 " Keep the plain solid background color exactly as it is.")
 STEPS = 8          # Klein is step-distilled; more steps drift toward realism
@@ -364,10 +364,8 @@ def _report_tqdm(report, weigh=None):
 
 
 class KleinPipeline(BasePipeline):
-    def __init__(self, models_dir: str = "models", mode: str = "auto",
-                 model_id: str = MODEL_ID):
-        # any FLUX.2 Klein checkpoint: edits and inpaint need its pipelines
-        self.model_id = model_id or MODEL_ID
+    def __init__(self, models_dir: str = "models", mode: str = "auto"):
+        self.model_id = MODEL_ID
         self.models_dir = models_dir
         self.mode = mode
         self._resolved = None

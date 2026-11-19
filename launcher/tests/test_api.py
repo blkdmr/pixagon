@@ -176,6 +176,5 @@ def test_setup_dialog_defaults_match_the_server():
     # plugin/setup.lua fills its fields before the supervisor answers
     lua = (pathlib.Path(__file__).resolve().parents[2] / "plugin" /
            "setup.lua").read_text(encoding="utf-8")
-    assert f'"{config.DEFAULT_LOCAL_MODEL}"' in lua
     assert f'"{config.DEFAULT_OPENROUTER_MODEL}"' in lua
     assert f'provider = "{config.DEFAULT_PROVIDER}"' in lua

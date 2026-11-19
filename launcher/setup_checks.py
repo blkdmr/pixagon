@@ -8,22 +8,17 @@ import shutil
 from launcher import platforms
 from launcher.paths import run_command
 from launcher.server_proc import venv_python
-from server.config import (DEFAULT_LOCAL_MODEL, load_model_settings,
-                           mask_key)
+from server.config import LOCAL_MODEL, load_model_settings, mask_key
 
 OK = "ok"
 MISSING = "missing"
 BLOCKED = "blocked"
 
-MODEL_FOLDER = "models--black-forest-labs--FLUX.2-klein-4B"  # the default
+# the Hugging Face cache folder of the model (as server.instruct names it)
+MODEL_FOLDER = "models--" + LOCAL_MODEL.replace("/", "--")
 # a snapshot dir appears from the first file downloaded, long before it's done
 MODEL_MARKER = ".complete"
 MODEL_GB = 15
-
-
-def model_folder(model_id: str) -> str:
-    """The Hugging Face cache folder of a repo id (as server.instruct names it)."""
-    return "models--" + model_id.replace("/", "--")
 
 
 def is_local(settings) -> bool:
@@ -45,7 +40,7 @@ def backend_label(settings=None) -> str:
     settings = settings or load_model_settings()
     if settings["provider"] == "openrouter":
         return "OpenRouter · " + settings["openrouter_model"]
-    return settings["local_model"].rsplit("/", 1)[-1] + " · local"
+    return LOCAL_MODEL.rsplit("/", 1)[-1] + " · local"
 
 
 # metadata only, not a real import -- importing torch/diffusers costs seconds
@@ -95,23 +90,17 @@ def _free_gb(folder) -> int:
         return 0
 
 
-def model_label(model_id: str) -> str:
-    if model_id == DEFAULT_LOCAL_MODEL:
-        return f"Model, {MODEL_GB} GB"
-    return "Model, " + model_id.rsplit("/", 1)[-1]
-
-
 def _model_item(paths, settings=None) -> dict:
     settings = settings or load_model_settings()
-    model_id = settings["local_model"]
     local = is_local(settings)
-    marker = paths.models_dir / model_folder(model_id) / MODEL_MARKER
+    label = f"Model, {MODEL_GB} GB"
+    marker = paths.models_dir / MODEL_FOLDER / MODEL_MARKER
     if marker.is_file():
-        return _item("model", model_label(model_id), OK, "downloaded",
+        return _item("model", label, OK, "downloaded",
                      required=local, needs=["deps"])
     detail = (f"{_free_gb(paths.models_dir)} GB free" if local
               else "only for the local model")
-    return _item("model", model_label(model_id), MISSING, detail,
+    return _item("model", label, MISSING, detail,
                  required=local, needs=["deps"])
 
 

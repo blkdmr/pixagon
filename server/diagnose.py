@@ -10,7 +10,7 @@ Run: .venv\\Scripts\\python -m server.diagnose   (Windows)
 import importlib.metadata as md
 import sys
 
-from server.config import load_model_settings, load_models_dir
+from server.config import LOCAL_MODEL, load_model_settings, load_models_dir
 from server.instruct import (memory_status, page_file_hint, pick_device,
                              safetensors_expected_size, snapshot_dir)
 
@@ -69,7 +69,7 @@ def show_files() -> object | None:
         print(f"  skipped: the launcher uses {settings['provider']} "
               f"({settings['openrouter_model']}), no local model")
         return None
-    model_id = settings["local_model"]
+    model_id = LOCAL_MODEL
     print(f"== model files ({model_id}, models_dir = {models_dir!r}) ==")
     snap = snapshot_dir(models_dir, model_id)
     if snap is None:

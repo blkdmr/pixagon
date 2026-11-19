@@ -14,7 +14,7 @@ import threading
 
 from launcher import platforms, setup_checks
 from launcher.server_proc import TreeGuard, clean_line
-from server.config import DEFAULT_LOCAL_MODEL, load_model_settings
+from server.config import LOCAL_MODEL, load_model_settings
 
 # uv first, everything else runs through it. torch before deps:
 # bitsandbytes pulls torch>=2.3,<3 on its own, and if nothing satisfies that
@@ -26,7 +26,6 @@ LABELS = {"uv": "Installing uv",
           "torch": "Installing " + platforms.torch_label(),
           "model": "Downloading the model"}
 TORCH_INDEX = platforms.CUDA_TORCH_INDEX
-MODEL_ID = DEFAULT_LOCAL_MODEL  # Setup > Model can pick another
 # asked of uv when no usable Python was found; uv downloads it if needed
 DEFAULT_PYTHON = "3.12"
 
@@ -74,12 +73,10 @@ def command(step_id: str, paths) -> list[str] | None:
         return [uv, "pip", "install", "--python", interpreter,
                 *platforms.torch_install_args()]
     if step_id == "model":
-        # the local model chosen in Setup (FLUX.2 Klein 4B unless changed)
-        model_id = settings["local_model"]
-        folder = setup_checks.model_folder(model_id)
+        # FLUX.2 Klein 4B, the only local model
+        folder = setup_checks.MODEL_FOLDER
         # byte-total bar (not file count); Xet's progress lags real transfer,
-        # so it's disabled; the default repo's standalone ~8 GB checkpoint is
-        # unused (the pattern matches nothing in other repos)
+        # so it's disabled; the repo's standalone ~8 GB checkpoint is unused
         code = (
             "import os\n"
             "os.environ['HF_HUB_DISABLE_XET'] = '1'\n"
@@ -97,7 +94,7 @@ def command(step_id: str, paths) -> list[str] | None:
             "        if line != _P._last:\n"
             "            print(line, flush=True)\n"
             "            _P._last = line\n"
-            f"snapshot_download({model_id!r}, cache_dir=r'{paths.models_dir}', "
+            f"snapshot_download({LOCAL_MODEL!r}, cache_dir=r'{paths.models_dir}', "
             "ignore_patterns=['flux-2-klein-4b.safetensors'], tqdm_class=_P)\n"
             "import pathlib\n"
             # marker written only once the download actually finishes

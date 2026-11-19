@@ -18,7 +18,6 @@ local ui = moduleFrom("ui.lua")
 local sprite = moduleFrom("sprite.lua")
 local results = moduleFrom("results.lua")
 local history = moduleFrom("history.lua")
-local animation = moduleFrom("animation.lua")
 
 local D = {}
 
@@ -171,11 +170,9 @@ function D.open()
   -- clicking Run or History at a dead server.
   function syncButtons()
     local up = serverStatus == "online" or serverStatus == "warming"
-    local isLocal = not serverBackend or not serverBackend:find("^OpenRouter")
     dlg:modify{ id = "run", enabled = up and state ~= "running" }
     dlg:modify{ id = "historybtn", enabled = up }
     dlg:modify{ id = "cancel", enabled = state == "running" }
-    dlg:modify{ id = "animatebtn", enabled = up and isLocal }
     if services then
       dlg:modify{ id = "serverbtn", text = up and "Stop server" or "Start server" }
     end
@@ -654,9 +651,6 @@ function D.open()
   end }
   dlg:button{ id = "historybtn", text = "History", onclick = function()
     history.showHistory(client)
-  end }
-  dlg:button{ id = "animatebtn", text = "Animate...", onclick = function()
-    animation.open()
   end }
   dlg:button{ id = "setupbtn", text = "Setup...", visible = services ~= nil,
               onclick = function() services.setup.open() end }

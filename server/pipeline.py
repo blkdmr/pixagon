@@ -1,6 +1,6 @@
 """Base pipeline: the contract every image backend must satisfy.
 
-main.py and animate.py call only these methods, so a new backend
+main.py calls only these methods, so a new backend
 (a different diffusion model, an API provider, a mock for tests) only
 needs to subclass BasePipeline and register itself in the models registry.
 """

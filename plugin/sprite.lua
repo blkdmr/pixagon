@@ -114,43 +114,6 @@ function S.paletteFromFile(path)
   return (ok and pal) and S.paletteColors(pal) or nil
 end
 
--- Flatten each frame in a range to base64 PNG; used when animation needs a
--- starting frame from the current sprite.
-function S.exportFrameRange(startFrame, endFrame)
-  local spr = app.sprite
-  local out = {}
-  for i = startFrame, endFrame do
-    local img = Image(spr.width, spr.height)
-    img:drawSprite(spr, i)
-    local p = tempPath("frame_" .. i .. ".png")
-    img:saveAs(p)
-    local data = readFile(p)
-    if data then out[#out + 1] = b64.encode(data) end
-  end
-  return out
-end
-
--- Insert animation frames into the timeline as a new layer, one cel per frame.
--- All in one transaction for single undo.
-function S.insertAnimation(imgs, durations, layerName)
-  local spr = app.sprite
-  if not spr then
-    spr = Sprite(imgs[1].width, imgs[1].height)
-  end
-  app.transaction("Pixagon: insert animation", function()
-    local layer = spr:newLayer()
-    layer.name = layerName or "Pixagon Anim"
-    for i, img in ipairs(imgs) do
-      while #spr.frames < i do
-        spr:newFrame(#spr.frames + 1)
-      end
-      spr:newCel(layer, spr.frames[i], img, Point(0, 0))
-      spr.frames[i].duration = (durations[i] or 125) / 1000.0
-    end
-  end)
-  app.refresh()
-end
-
 local function eachLayer(layers, fn)
   for _, l in ipairs(layers) do
     fn(l)

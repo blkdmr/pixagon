@@ -113,29 +113,11 @@ eq(S.clip("/a/very/long/path/here", 12, true), "...path/here", "path keeps tail"
 -- first values: saved settings win, junk falls back to the defaults
 local init = S.initial({ provider = "openrouter", openrouter_api_key = "sk-1" }, nil)
 eq(init.provider, "openrouter", "saved provider")
-eq(init.local_model, S.DEFAULTS.local_model, "default local model")
+eq(init.openrouter_model, S.DEFAULTS.openrouter_model, "default cloud model")
 eq(init.keyState, "API key: saved", "saved key noted, never shown")
 eq(S.initial(nil, "sk-env").keyState, "API key: from OPENROUTER_API_KEY",
    "env key wins")
 eq(S.initial({ provider = "bogus" }).provider, "local", "bad provider")
-
--- the full catalog is listed; planned models are marked, not hidden
-local catalog = {
-  { id = "a/klein", name = "FLUX.2 Klein", params = "4B", status = "supported",
-    vram = { bf16 = 11.5, offload = 8 } },
-  { id = "b/schnell", name = "Schnell", params = "12B", status = "planned" },
-}
-local models = S.localModels(catalog, "a/klein")
-eq(#models, 2, "every catalog model listed")
-eq(S.names(models)[2], "Schnell (12B) (planned)", "planned marked")
-eq(S.byName(models, "FLUX.2 Klein (4B)").id, "a/klein", "name back to id")
-eq(S.byName(models, "Schnell (12B) (planned)").planned, true, "planned flag")
-local custom = S.localModels(catalog, "me/my-finetune")
-eq(custom[3].id, "me/my-finetune", "a custom repo stays selectable")
-eq(S.modelInfo(models[1]), "~11.5 GB VRAM, 8 GB with offload (picked automatically)",
-   "VRAM line")
-eq(S.modelInfo(models[2]), "Not supported yet.", "planned info")
-eq(S.modelInfo(custom[3]), "Custom Hugging Face repo.", "custom info")
 
 -- install rows and the line under the button
 local rows = {

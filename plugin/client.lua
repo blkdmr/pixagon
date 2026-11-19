@@ -92,17 +92,10 @@ function M.request(payload, callbacks)
   return { cancel = oneShot(payload, function(msg, finish)
     if msg.type == "progress" then
       if callbacks.onprogress then
-        callbacks.onprogress(msg.value, msg.stage,
-                             msg.frame_index, msg.frame_total)
+        callbacks.onprogress(msg.value, msg.stage)
       end
     elseif msg.type == "result" then
       finish(); callbacks.onresult(msg.images, msg.seeds)
-    elseif msg.type == "anim_result" then
-      finish()
-      if callbacks.onanimresult then
-        callbacks.onanimresult(msg.frame_images, msg.frame_durations,
-                               msg.seeds, msg.loop)
-      end
     elseif msg.type == "error" then
       finish(); callbacks.onerror(msg.message)
     end

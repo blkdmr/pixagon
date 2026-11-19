@@ -191,12 +191,6 @@ class OpenRouterPipeline(BasePipeline):
                          variants, seeds, on_progress)
         return [match_size(img, big.size) for img in out]
 
-    def animate_sequential(self, pipe_self, req, on_progress=None):
-        """Sequential animation via cloud edits — same loop as local."""
-        from server.animate import AnimationGenerator
-        gen = AnimationGenerator()
-        return gen.generate_sequential(self, req, on_progress)
-
     def inpaint(self, prompt, image, mask, variants=4, on_progress=None,
                 seeds=None):
         """The model redraws the masked area; as with the local model, only

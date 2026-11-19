@@ -19,9 +19,9 @@ import websockets.exceptions
 from server import models
 from server.postprocess import (crop_to_subject, fit_into, mirror_symmetry,
                                 subject_palette, sprite_palette,
-                                remove_background, postprocess_animation)
+                                remove_background)
 from server.protocol import ProtocolError, parse_request, error_msg, \
-    progress_msg, result_msg, anim_result_msg
+    progress_msg, result_msg
 
 log = logging.getLogger("pixagon")
 
@@ -132,8 +132,7 @@ def _register_default_models():
         from server import config
         from server.instruct import KleinPipeline
         p = KleinPipeline(models_dir=config.load_models_dir(),
-                          mode=config.load_vram_mode(),
-                          model_id=config.load_model_settings()["local_model"])
+                          mode=config.load_vram_mode())
         p.load()
         return p
 
@@ -169,7 +168,7 @@ def backend_label():
     s = config.load_model_settings()
     if s["provider"] == "openrouter":
         return f"OpenRouter · {s['openrouter_model']}"
-    return s["local_model"].rsplit("/", 1)[-1]
+    return config.LOCAL_MODEL.rsplit("/", 1)[-1]
 
 
 def _run(req, on_progress, on_stage):
@@ -230,27 +229,6 @@ def _run(req, on_progress, on_stage):
     return out, seeds
 
 
-def _run_animation(req, on_progress, on_stage):
-    """Blocking sequential frame generation. Runs in the GPU worker thread."""
-    from server.animate import AnimationGenerator
-    name = active_model()
-    on_stage(f"Generating frame 1/{req.animation.frame_count}")
-    pipe = models.get(name, on_stage=on_stage)
-
-    def frame_progress(v):
-        frame_idx = int(v * req.animation.frame_count)
-        frame_idx = min(frame_idx, req.animation.frame_count - 1)
-        on_progress(v)
-        on_stage(f"Generating frame {frame_idx + 1}/{req.animation.frame_count}")
-
-    gen = AnimationGenerator()
-    raw_frames, seeds = gen.generate_sequential(pipe, req, frame_progress)
-    on_stage(f"Post-processing {req.animation.frame_count} frames")
-    final_frames = postprocess_animation(req, raw_frames)
-    _save_debug(req, raw_frames, final_frames, seeds)
-    return final_frames, seeds
-
-
 class JobCancelled(Exception):
     """Client disconnected mid-generation; abort the GPU job."""
 
@@ -276,20 +254,10 @@ async def handle_request(ws, req):
     def on_stage(text):
         send(progress_msg(req.id, 0.0, stage=text))
 
-    if req.mode == "animate":
-        frames, seeds = await loop.run_in_executor(
-            _gpu_executor,
-            functools.partial(_run_animation, req, on_progress, on_stage))
-        anim = req.animation
-        duration_ms = round(1000 / anim.fps)
-        durations = [duration_ms] * len(frames)
-        await ws.send(anim_result_msg(req.id, frames, durations, seeds,
-                                      anim.loop))
-    else:
-        images, seeds = await loop.run_in_executor(
-            _gpu_executor,
-            functools.partial(_run, req, on_progress, on_stage))
-        await ws.send(result_msg(req.id, images, seeds))
+    images, seeds = await loop.run_in_executor(
+        _gpu_executor,
+        functools.partial(_run, req, on_progress, on_stage))
+    await ws.send(result_msg(req.id, images, seeds))
 
 
 async def _handler(ws):

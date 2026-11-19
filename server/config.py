@@ -122,14 +122,14 @@ def save_settings(values: dict, path: pathlib.Path | None = None) -> None:
 
 PROVIDERS = ("local", "openrouter")
 DEFAULT_PROVIDER = "local"
-DEFAULT_LOCAL_MODEL = "black-forest-labs/FLUX.2-klein-4B"
+LOCAL_MODEL = "black-forest-labs/FLUX.2-klein-4B"  # the only local model
 # image in + image out on OpenRouter; any model with image output works
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash-image"
 DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1"
 API_KEY_SETTING = "openrouter_api_key"
 API_KEY_ENV = "OPENROUTER_API_KEY"  # wins over the saved key when set
-MODEL_KEYS = ("provider", "local_model", "openrouter_model",
-              API_KEY_SETTING, "openrouter_base_url")
+MODEL_KEYS = ("provider", "openrouter_model", API_KEY_SETTING,
+              "openrouter_base_url")
 
 
 def _text(value, default: str) -> str:
@@ -148,7 +148,6 @@ def load_model_settings(path: pathlib.Path | None = None,
     env_key = _text(env.get(API_KEY_ENV), "")
     return {
         "provider": provider if provider in PROVIDERS else DEFAULT_PROVIDER,
-        "local_model": _text(data.get("local_model"), DEFAULT_LOCAL_MODEL),
         "openrouter_model": _text(data.get("openrouter_model"),
                                   DEFAULT_OPENROUTER_MODEL),
         "openrouter_base_url": _text(data.get("openrouter_base_url"),

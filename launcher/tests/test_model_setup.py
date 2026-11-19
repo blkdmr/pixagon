@@ -100,28 +100,9 @@ def test_base_requirements_exist_and_are_part_of_the_full_list():
         assert name.lower() in base.lower()
 
 
-def test_a_custom_local_model_is_downloaded_and_checked_by_its_id(tmp_path):
-    config.save_model_settings({"local_model": "someone/klein-pixel-tune"})
-    p = make_paths(tmp_path)
-    code = setup_steps.command("model", p)[-1]
-    assert "'someone/klein-pixel-tune'" in code
-    assert "models--someone--klein-pixel-tune" in code
-    items = by_id(setup_checks.check_all(p, run=lambda cmd: None))
-    assert items["model"]["label"] == "Model, klein-pixel-tune"
-    assert items["model"]["state"] == setup_checks.MISSING
-    folder = p.models_dir / "models--someone--klein-pixel-tune"
-    folder.mkdir(parents=True)
-    (folder / setup_checks.MODEL_MARKER).write_text("ok")
-    items = by_id(setup_checks.check_all(p, run=lambda cmd: None))
-    assert items["model"]["state"] == setup_checks.OK
-
-
 def test_model_folder_matches_the_server():
     from server.instruct import model_folder
-    for repo in ("black-forest-labs/FLUX.2-klein-4B", "a/b"):
-        assert setup_checks.model_folder(repo) == model_folder(repo)
-    assert setup_checks.MODEL_FOLDER == model_folder(
-        config.DEFAULT_LOCAL_MODEL)
+    assert setup_checks.MODEL_FOLDER == model_folder(config.LOCAL_MODEL)
 
 
 def test_what_start_needs_per_provider():

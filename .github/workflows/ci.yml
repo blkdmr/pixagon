@@ -60,8 +60,7 @@ jobs:
           path, = glob.glob("release/dist/pixagon-*.aseprite-extension")
           names = set(zipfile.ZipFile(path).namelist())
           need = {"package.json", "main.lua", "bootstrap.lua",
-                  "launcher/daemon.py", "server/main.py",
-                  "server/model_catalog.json"}
+                  "launcher/daemon.py", "server/main.py"}
           missing = need - names
           assert not missing, f"missing from {path}: {sorted(missing)}"
           tests = [n for n in names if "/tests/" in n or n.startswith("tests/")]

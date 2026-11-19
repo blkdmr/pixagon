@@ -8,13 +8,11 @@ import pathlib
 import threading
 
 from launcher import paths, platforms, server_proc, setup_checks, setup_steps
-from server import catalog
-from launcher.setup_checks import model_folder, MODEL_MARKER
 from launcher.paths import app_root
 from launcher.version import VERSION
-from server.config import (DEFAULT_LOCAL_MODEL, DEFAULT_OPENROUTER_MODEL,
-                           HOST, VRAM_MODES, load_model_settings, load_port,
-                           load_settings, load_vram_mode, mask_key, save_port,
+from server.config import (DEFAULT_OPENROUTER_MODEL, HOST, VRAM_MODES,
+                           load_model_settings, load_port, load_settings,
+                           load_vram_mode, mask_key, save_port,
                            save_model_settings, save_settings, save_vram_mode)
 
 SERVER_NEEDS = setup_checks.SERVER_NEEDS
@@ -179,8 +177,7 @@ class Api:
         rerun: the cloud needs a different set of pieces than the local model."""
         if not isinstance(values, dict):
             return self.setup_state()
-        # the model menu offers each model once per VRAM mode, so a pick
-        # carries both; the mode lives in its own setting
+        # the VRAM mode lives in its own setting
         mode = values.get("vram_mode")
         if mode in VRAM_MODES:
             save_vram_mode(mode)
@@ -193,19 +190,11 @@ class Api:
 
     def _model_view(self) -> dict:
         s = load_model_settings()
-        cat = catalog.catalog_for_ui()
-        models_dir = self.paths.models_dir
-        for entry in cat:
-            marker = models_dir / model_folder(entry["id"]) / MODEL_MARKER
-            entry["downloaded"] = marker.is_file()
         return {"provider": s["provider"],
-                "local_model": s["local_model"],
                 "openrouter_model": s["openrouter_model"],
                 "key": mask_key(s["api_key"]),
                 "key_source": s["api_key_source"],
-                "defaults": {"local_model": DEFAULT_LOCAL_MODEL,
-                             "openrouter_model": DEFAULT_OPENROUTER_MODEL},
-                "catalog": cat}
+                "defaults": {"openrouter_model": DEFAULT_OPENROUTER_MODEL}}
 
     # ---- setup
 

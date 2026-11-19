@@ -62,20 +62,4 @@ function P.assembleInstruction(viewPreset, subject, extra)
   return text
 end
 
--- Animation presets: UI label -> protocol preset key (nil = custom/no preset).
-P.ANIM_PRESETS = {
-  ["Walk cycle"] = "walk_cycle",
-  ["Idle"]       = "idle",
-  ["Attack"]     = "attack",
-  ["Custom"]     = nil,
-}
-P.ANIM_PRESET_ORDER = { "Walk cycle", "Idle", "Attack", "Custom" }
-
--- Default slider values per preset, so the dialog fills sensible defaults.
-P.ANIM_PRESET_DEFAULTS = {
-  walk_cycle = { frames = 8,  strength = 0.50, loop = true },
-  idle       = { frames = 4,  strength = 0.35, loop = true },
-  attack     = { frames = 6,  strength = 0.60, loop = false },
-}
-
 return P
