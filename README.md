@@ -9,10 +9,10 @@ Generate sprites from a text prompt, edit an existing sprite with a plain instru
 Pixagon is an Aseprite extension. You stay in the editor the whole time. Results open in a side window, and a click drops one into your sprite as a new layer. Pixagon never edits your existing pixels.
 
 <p align="center">
-  <img src="assets/goblin.png" width="160" alt="Goblin with a dagger">
-  <img src="assets/cottage.png" width="160" alt="Timber cottage">
-  <img src="assets/coin.png" width="160" alt="Gold coin with a crown">
-  <img src="assets/adventurer.png" width="160" alt="Adventurer in a leather coat">
+  <img src="assets/gallery/goblin.png" width="160" alt="Goblin with a dagger">
+  <img src="assets/gallery/cottage.png" width="160" alt="Timber cottage">
+  <img src="assets/gallery/coin.png" width="160" alt="Gold coin with a crown">
+  <img src="assets/gallery/adventurer.png" width="160" alt="Adventurer in a leather coat">
 </p>
 <p align="center"><em>Made with Pixagon, one generation each.</em></p>
 
@@ -24,8 +24,8 @@ Pixagon is an Aseprite extension. You stay in the editor the whole time. Results
 **Rotate + Instruct:** view the same subject from another angle, for turnarounds.
 
 <p align="center">
-  <img src="assets/tall-man.png" width="160" alt="Tall man in a cloak, three-quarter view">
-  <img src="assets/tall-man-front.png" width="160" alt="The same man seen from the front">
+  <img src="assets/gallery/tall-man.png" width="160" alt="Tall man in a cloak, three-quarter view">
+  <img src="assets/gallery/tall-man-front.png" width="160" alt="The same man seen from the front">
 </p>
 <p align="center"><em>Rotate + Instruct: the same character from two angles.</em></p>
 
@@ -62,6 +62,38 @@ There is no CPU fallback for the local model, and AMD cards and Intel Macs are n
 One file works on every OS. Everything Pixagon downloads lives in a per-user folder (%APPDATA%\Pixagon, ~/Library/Application Support/Pixagon or ~/.config/pixagon), not inside the extension, so updating the extension never wipes your model.
 
 Pixagon is free, or pay what you want. The source stays open if you prefer to build it yourself.
+
+## Your first sprite
+
+**1. Open Pixagon.** Both commands live in the Sprite menu: Pixagon... (F1) opens the panel, Pixagon Setup... opens Setup.
+
+<p align="center">
+  <img src="assets/preview/navbar.png" width="233" alt="Aseprite Sprite menu with the Pixagon... and Pixagon Setup... commands">
+</p>
+
+**2. Run Setup once.** Pick a provider, enter your details (here an OpenRouter model and API key) and press Install. When every line reads [ok], you are ready.
+
+<p align="center">
+  <img src="assets/preview/setup-menu.png" width="420" alt="Pixagon Setup dialog with OpenRouter selected and every install step marked ok">
+</p>
+
+**3. Describe the sprite.** In the panel, pick a task, a view and a subject, set the size and how many variants you want, then press Run. The status box shows the exact text Pixagon will send.
+
+<p align="center">
+  <img src="assets/preview/generation-menu.png" width="420" alt="Pixagon panel set to Generate, 3/4 view, subject wizard's staff, 128x128, 4 variants">
+</p>
+
+**4. Pick a variant.** The results open in a side window. Click the one you like.
+
+<p align="center">
+  <img src="assets/preview/variant-menu.png" width="360" alt="Results window with four wizard's staff variants">
+</p>
+
+**5. Keep drawing.** The variant lands in your sprite as a new layer, ready to touch up by hand.
+
+<p align="center">
+  <img src="assets/preview/aseprite-injection.png" width="360" alt="The chosen wizard's staff inserted into the Aseprite canvas">
+</p>
 
 ## Status
 

@@ -238,6 +238,23 @@
     .demos .tall { grid-row: auto; }
   }
 
+  /* ---- workflow walkthrough: numbered text beside each screenshot ---- */
+  .flow { margin-top: 40px; display: grid; gap: 18px; counter-reset: f; }
+  .flow-step {
+    display: grid; grid-template-columns: 1fr 1.25fr; gap: 28px; align-items: center;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 24px;
+  }
+  .flow-step h3 { margin: 0; font-family: var(--pixel); font-size: 21px; color: var(--gold); }
+  .flow-step h3::before { counter-increment: f; content: counter(f) ". "; color: var(--ink-faint); }
+  .flow-step p { margin: 10px 0 0; color: var(--ink-dim); font-size: 15px; }
+  .flow-step figure { margin: 0; display: grid; place-items: center; }
+  /* screenshots never upscale past their native size, so the Aseprite UI stays sharp */
+  .flow-step img { display: block; width: auto; max-height: 420px; border-radius: 6px; border: 1px solid var(--line); }
+  @media (max-width: 760px) {
+    .flow-step { grid-template-columns: 1fr; gap: 18px; padding: 18px; }
+    .flow-step img { max-height: none; }
+  }
+
   /* ---- prompt recipe ---- */
   .recipe { margin-top: 34px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .recipe .chip { font-family: var(--mono); font-size: 13px; padding: 8px 14px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); color: var(--ink); }
@@ -298,8 +315,9 @@
   footer .mono { font-family: var(--mono); }
 
   /* ---- pixel type: logo and headings only; Inter keeps buttons and labels readable ---- */
-  .brand, .hero h1, .section-title, .final h2, .task h3 {
-    font-family: var(--pixel); font-weight: 700;
+  /* Pixelify's "fi" ligature reads as "A", so ligatures stay off */
+  .brand, .hero h1, .section-title, .final h2, .task h3, .flow-step h3 {
+    font-family: var(--pixel); font-weight: 700; font-variant-ligatures: none;
   }
   .btn, .ghbtn, .dlbtn, .eyebrow { font-family: var(--sans); font-weight: 700; }
   .hero h1 { font-size: clamp(34px, 6vw, 64px); line-height: 1.1; letter-spacing: 0; }
@@ -330,6 +348,7 @@
     <button class="navtoggle" type="button" aria-label="Toggle menu" aria-expanded="false" aria-controls="nav"><span></span></button>
     <nav id="nav">
       <a class="navlink" href="#tasks">Features</a>
+      <a class="navlink" href="#workflow">Workflow</a>
       <a class="navlink" href="#how">Architecture</a>
       <a class="ghbtn" href="https://github.com/blkdmr/pixagon">GitHub</a>
       <a class="dlbtn" href="https://blkdmr.itch.io/pixagon">Download</a>
@@ -367,12 +386,12 @@
           <span class="title">made with Pixagon, hover any sprite for its prompt</span>
         </div>
         <div class="grid">
-          <div class="cell"><img src="img/tall-man.png"><details class="tag"><summary>see prompt</summary><p>A tall man in fantasy costume</p></details></div>
-          <div class="cell"><img src="img/tall-man-front.png"><details class="tag"><summary>see prompt</summary><p>Show the same character from the front, seen head-on (edit of a prior character)</p></details></div>
-          <div class="cell"><img src="img/adventurer.png"><details class="tag"><summary>see prompt</summary><p>Pixel art sprite, full-body side view of a lean female explorer with short dark hair, leather jacket, worn trousers, boots, red scarf, belt pouches, and a sheathed curved sword. Alert, forward-leaning stance, muted earthy colors, dark outlines, and a clean silhouette.</p></details></div>
-          <div class="cell"><img src="img/cottage.png"><details class="tag"><summary>see prompt</summary><p>A fantasy cottage, seen exactly from the side at eye level, in strict profile view: only its side silhouette is visible, the front face cannot be seen at all. A flat 2D side-scroller game object. The camera does not look down at it.</p></details></div>
-          <div class="cell"><img src="img/goblin.png"><details class="tag"><summary>see prompt</summary><p>Pixel art sprite, full-body side view of a small, wiry goblin with green skin, pointed ears, a hooked nose, ragged leather armor, worn trousers, bare feet, a belt with pouches, and a rusty dagger. Hunched, sneaky stance, muted earthy colors, dark outlines, and a clean silhouette.</p></details></div>
-          <div class="cell"><img src="img/coin.png"><details class="tag"><summary>see prompt</summary><p>A single gold coin with an embossed crown, shiny in classic three-quarter view game perspective, seen from slightly above.</p></details></div>
+          <div class="cell"><img src="img/gallery/tall-man.png"><details class="tag"><summary>see prompt</summary><p>A tall man in fantasy costume</p></details></div>
+          <div class="cell"><img src="img/gallery/tall-man-front.png"><details class="tag"><summary>see prompt</summary><p>Show the same character from the front, seen head-on (edit of a prior character)</p></details></div>
+          <div class="cell"><img src="img/gallery/adventurer.png"><details class="tag"><summary>see prompt</summary><p>Pixel art sprite, full-body side view of a lean female explorer with short dark hair, leather jacket, worn trousers, boots, red scarf, belt pouches, and a sheathed curved sword. Alert, forward-leaning stance, muted earthy colors, dark outlines, and a clean silhouette.</p></details></div>
+          <div class="cell"><img src="img/gallery/cottage.png"><details class="tag"><summary>see prompt</summary><p>A fantasy cottage, seen exactly from the side at eye level, in strict profile view: only its side silhouette is visible, the front face cannot be seen at all. A flat 2D side-scroller game object. The camera does not look down at it.</p></details></div>
+          <div class="cell"><img src="img/gallery/goblin.png"><details class="tag"><summary>see prompt</summary><p>Pixel art sprite, full-body side view of a small, wiry goblin with green skin, pointed ears, a hooked nose, ragged leather armor, worn trousers, bare feet, a belt with pouches, and a rusty dagger. Hunched, sneaky stance, muted earthy colors, dark outlines, and a clean silhouette.</p></details></div>
+          <div class="cell"><img src="img/gallery/coin.png"><details class="tag"><summary>see prompt</summary><p>A single gold coin with an embossed crown, shiny in classic three-quarter view game perspective, seen from slightly above.</p></details></div>
         </div>
       </div>
       <p style="margin-top:14px; font-size:13px; color:var(--ink-faint); font-family:var(--mono);">
@@ -424,6 +443,54 @@
         <img src="img/rotate_back.gif" alt="Rotate, back view" loading="lazy">
       </div>
       <p class="demo-cap">Rotate / Instruct, two different turnarounds. All clips sped up.</p>-->
+    </div>
+  </section>
+
+  <section id="workflow">
+    <div class="wrap">
+      <div class="eyebrow">Workflow</div>
+      <h2 class="section-title">From prompt to layer in five steps</h2>
+      <p class="section-sub">
+        A real run: a wizard's staff, generated through OpenRouter and dropped
+        into a 128&times;128 sprite.
+      </p>
+      <div class="flow">
+        <div class="flow-step">
+          <div>
+            <h3>Open Pixagon</h3>
+            <p>Both commands live in the <strong>Sprite</strong> menu: <strong>Pixagon...</strong> (F1) opens the panel, <strong>Pixagon Setup...</strong> opens Setup.</p>
+          </div>
+          <figure><img src="img/preview/navbar.png" alt="Aseprite Sprite menu with the Pixagon... and Pixagon Setup... commands" loading="lazy"></figure>
+        </div>
+        <div class="flow-step">
+          <div>
+            <h3>Run Setup once</h3>
+            <p>Pick a provider, enter your details (here an OpenRouter model and API key) and press <strong>Install</strong>. When every line reads <code class="inline">[ok]</code>, you are ready.</p>
+          </div>
+          <figure><img src="img/preview/setup-menu.png" alt="Pixagon Setup dialog with OpenRouter selected and every install step marked ok" loading="lazy"></figure>
+        </div>
+        <div class="flow-step">
+          <div>
+            <h3>Describe the sprite</h3>
+            <p>Pick a task, a view and a subject, set the size and how many variants you want, then press <strong>Run</strong>. The status box shows the exact text Pixagon will send.</p>
+          </div>
+          <figure><img src="img/preview/generation-menu.png" alt="Pixagon panel set to Generate, 3/4 view, subject wizard's staff, 128x128, 4 variants" loading="lazy"></figure>
+        </div>
+        <div class="flow-step">
+          <div>
+            <h3>Pick a variant</h3>
+            <p>The results open in a side window. Click the one you like to insert it.</p>
+          </div>
+          <figure><img src="img/preview/variant-menu.png" alt="Results window with four wizard's staff variants" loading="lazy"></figure>
+        </div>
+        <div class="flow-step">
+          <div>
+            <h3>Keep drawing</h3>
+            <p>The variant lands in your sprite as a new layer, ready to touch up by hand. Your existing pixels stay untouched.</p>
+          </div>
+          <figure><img src="img/preview/aseprite-injection.png" alt="The chosen wizard's staff inserted into the Aseprite canvas" loading="lazy"></figure>
+        </div>
+      </div>
     </div>
   </section>
 
